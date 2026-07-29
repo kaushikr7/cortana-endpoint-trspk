@@ -44,6 +44,22 @@ class FakeClose(RuntimeError):
         self.reason = reason
 
 
+@dataclass
+class FakeConnectionRegistry:
+    """Dependency-free model of Cortana's one-connection ownership rule."""
+
+    active: dict[str, Any] = field(default_factory=dict)
+
+    def register(self, satellite_id: str, connection: Any) -> Any | None:
+        previous = self.active.get(satellite_id)
+        self.active[satellite_id] = connection
+        return previous if previous is not connection else None
+
+    def unregister(self, satellite_id: str, connection: Any) -> None:
+        if self.active.get(satellite_id) is connection:
+            self.active.pop(satellite_id, None)
+
+
 def require_object(value: Any, required: Iterable[str], optional: Iterable[str] = ()) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise InvalidEvent("event must be an object")
@@ -324,6 +340,8 @@ async def run_websocket_server(args: argparse.Namespace) -> None:
             "Install the optional fake-server dependency: pip install 'websockets>=13,<16'"
         ) from error
 
+    registry = FakeConnectionRegistry()
+
     async def connection(websocket: Any) -> None:
         session = FakeSession(
             ticket=args.ticket,
@@ -331,6 +349,7 @@ async def run_websocket_server(args: argparse.Namespace) -> None:
             area_id=args.area_id,
             label=args.label,
         )
+        registered = False
         try:
             async for message in websocket:
                 try:
@@ -342,10 +361,17 @@ async def run_websocket_server(args: argparse.Namespace) -> None:
                 except FakeClose as close:
                     await websocket.close(code=close.code, reason=close.reason)
                     return
+                if any(item.get("type") == "session.ready" for item in responses):
+                    previous = registry.register(args.satellite_id, websocket)
+                    registered = True
+                    if previous is not None:
+                        await previous.close(code=4001, reason="connection replaced")
                 for response in responses:
                     await websocket.send(json.dumps(response, separators=(",", ":")))
                 session.drain_frames(1)
         finally:
+            if registered:
+                registry.unregister(args.satellite_id, websocket)
             session.drain_frames()
 
     async with serve(connection, args.host, args.port):

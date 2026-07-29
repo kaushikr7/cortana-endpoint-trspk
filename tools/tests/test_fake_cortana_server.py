@@ -7,7 +7,12 @@ from pathlib import Path
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from fake_cortana_server import CAPABILITIES, FakeClose, FakeSession  # noqa: E402
+from fake_cortana_server import (  # noqa: E402
+    CAPABILITIES,
+    FakeClose,
+    FakeConnectionRegistry,
+    FakeSession,
+)
 
 
 class FakeSessionTests(unittest.TestCase):
@@ -145,6 +150,17 @@ class FakeSessionTests(unittest.TestCase):
             json.dumps({"type": "session.ping", "nonce": "check"})
         )[0]
         self.assertEqual(health["nonce"], "check")
+
+    def test_connection_registry_replaces_without_stale_unregister(self) -> None:
+        registry = FakeConnectionRegistry()
+        first = object()
+        second = object()
+        self.assertIsNone(registry.register("study-voice-1", first))
+        self.assertIs(registry.register("study-voice-1", second), first)
+        registry.unregister("study-voice-1", first)
+        self.assertIs(registry.active["study-voice-1"], second)
+        registry.unregister("study-voice-1", second)
+        self.assertNotIn("study-voice-1", registry.active)
 
 
 if __name__ == "__main__":

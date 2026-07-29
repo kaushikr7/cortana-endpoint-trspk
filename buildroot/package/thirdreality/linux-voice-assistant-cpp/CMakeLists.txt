@@ -158,9 +158,11 @@ target_compile_options(lva_microfrontend PRIVATE
 add_executable(linux-voice-assistant-cpp
     src/main.cpp
     src/config/EndpointConfig.cpp
+    src/cortana/CurlSessionTransport.cpp
     src/cortana/DeviceTicket.cpp
     src/cortana/DeviceTicketClient.cpp
     src/cortana/Protocol.cpp
+    src/cortana/SessionClient.cpp
     src/protocol/Frame.cpp
     src/protocol/MessageRegistry.cpp
     src/protocol/Connection.cpp
@@ -216,8 +218,8 @@ target_compile_options(linux-voice-assistant-cpp PRIVATE
     -Wno-deprecated-declarations
 )
 
-# Threading is needed for the SIGTERM wait helper and (in later phases)
-# the audio capture thread.
+# Threading is needed for the SIGTERM wait helper, Cortana's single-owner
+# network worker, and the audio capture thread.
 find_package(Threads REQUIRED)
 
 target_link_libraries(linux-voice-assistant-cpp

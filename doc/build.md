@@ -804,6 +804,20 @@ deferred until the first planned firmware build.
 - Keep network work off audio callbacks and define single-owner rules for
   connection and endpoint state.
 
+Implementation paths are `src/cortana/SessionClient.{h,cpp}`,
+`SessionTransport.h`, and `CurlSessionTransport.{h,cpp}`. One worker owns the
+ticket exchange, libcurl handle, handshake, connection state, ping, and queue
+draining. Other threads can only enqueue bounded text commands or consume
+generation-tagged events; neither operation performs network I/O. Every
+connection attempt obtains a fresh single-use ticket. Transient failures use
+bounded equal-jitter exponential backoff, while close code `4001` (connection
+replaced) and authentication/capability rejection fail closed to prevent two
+endpoints with the same satellite ID from evicting each other indefinitely.
+The host suite covers handshake ordering, negotiated identity validation,
+keepalive, reconnect with a fresh ticket, replacement close, queue bounds, and
+deterministic backoff. Target libcurl/runtime WSS validation remains deferred
+to the first planned firmware build and device-test phase.
+
 #### T2.4 Remove ESPHome/HA control-plane code — Medium
 
 - Remove protocol framing, protobuf generation/dependencies, API server, mDNS,

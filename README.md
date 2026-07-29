@@ -65,6 +65,7 @@ Run the host-only physical-control tests without building firmware:
 ./script/test_device_controls.sh
 ./script/test_cortana_protocol.sh
 ./script/test_device_ticket.sh
+./script/test_cortana_session.sh
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
   -s tools/tests -p 'test_*.py'
 ```
