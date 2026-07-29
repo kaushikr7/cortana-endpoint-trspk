@@ -847,6 +847,17 @@ validated configuration or credential changes.
   buffer while removing their dependency on local wake scanners.
 - Expose bounded queue, overrun, AEC-reference, and timing metrics.
 
+Implementation paths are `src/audio/CapturePipeline.{h,cpp}`,
+`CaptureFrame.{h,cpp}`, `AudioCapture.{h,cpp}`, and `PcmRingBuffer.{h,cpp}`.
+The production path is ALSA-only: each exact 10 ms four-channel period is
+split into mono microphone and loopback reference, processed through WebRTC,
+and written to one bounded SPSC queue. Metrics expose queue capacity/current
+depth/high-water mark, written/read/dropped/discarded samples, successful AEC
+reference periods, ALSA recoveries and short reads, processing failures, last
+period time, and worst processing duration. The main binary deliberately drains
+the queue until T3.2 supplies generation-aware WSS transport, preventing stale
+latency without coupling capture to any local wake scanner.
+
 #### T3.2 Real-time PCM transport — High
 
 - Coalesce exactly two 10 ms periods into each 640-byte frame.

@@ -20,14 +20,11 @@ find_package(PkgConfig REQUIRED)
 # cost). Provides the imported target `nlohmann_json::nlohmann_json`.
 find_package(nlohmann_json CONFIG REQUIRED)
 
-# libmpv: media playback for the MediaPlayerEntity (phase 3a) and
-# the TTS announce player (phase 4). Provides libmpv.so.2.
+# libmpv: temporary legacy media dependency pending the playback purge.
 pkg_check_modules(MPV REQUIRED IMPORTED_TARGET mpv)
 message(STATUS "Found mpv ${MPV_VERSION} via pkg-config")
 
-# libpulse-simple: synchronous PulseAudio capture API used by
-# AudioCapture (phase 3b). The "simple" wrapper is sufficient — we
-# only need a blocking read in a dedicated thread.
+# libpulse-simple: retained for the bounded raw playback implementation.
 pkg_check_modules(PULSE_SIMPLE REQUIRED IMPORTED_TARGET libpulse-simple)
 message(STATUS "Found libpulse-simple ${PULSE_SIMPLE_VERSION} via pkg-config")
 
@@ -42,10 +39,7 @@ message(STATUS "Found webrtc-audio-processing ${WEBRTC_APM_VERSION} via pkg-conf
 pkg_check_modules(LIBCURL REQUIRED IMPORTED_TARGET libcurl)
 message(STATUS "Found libcurl ${LIBCURL_VERSION} via pkg-config")
 
-# alsa-lib: required by the aec_loopback_test dev tool, which opens
-# the hardware loopback capture device (e.g. plughw:0,4) directly.
-# A future change will also use this in the production AudioCapture
-# for the ALSA capture backend that drives hardware-loopback AEC.
+# alsa-lib: production capture and the AEC loopback diagnostic.
 pkg_check_modules(ALSA REQUIRED IMPORTED_TARGET alsa)
 message(STATUS "Found alsa-lib ${ALSA_VERSION} via pkg-config")
 
@@ -106,14 +100,8 @@ add_executable(linux-voice-assistant-cpp
     src/audio/LibMpvPlayer.cpp
     src/audio/PcmRingBuffer.cpp
     src/audio/AudioCapture.cpp
-    src/audio/ExternalWakeWord.cpp
-    src/audio/MicroFeatures.cpp
-    src/audio/MicroWakeWord.cpp
-    src/audio/OpenWakeWord.cpp
-    src/audio/OpenWakeWordFeatures.cpp
-    src/audio/TfliteRuntime.cpp
-    src/audio/WakeWordEngine.cpp
-    src/audio/WakeWordScanner.cpp
+    src/audio/CaptureFrame.cpp
+    src/audio/CapturePipeline.cpp
     src/audio/WebRtcProcessor.cpp
     src/tr/HomeButton.cpp
     src/tr/LedController.cpp
@@ -134,7 +122,6 @@ find_package(Threads REQUIRED)
 
 target_link_libraries(linux-voice-assistant-cpp
     PRIVATE
-        lva_microfrontend
         nlohmann_json::nlohmann_json
         PkgConfig::MPV
         PkgConfig::PULSE_SIMPLE
@@ -142,7 +129,6 @@ target_link_libraries(linux-voice-assistant-cpp
         PkgConfig::WEBRTC_APM
         PkgConfig::LIBCURL
         Threads::Threads
-        ${CMAKE_DL_LIBS}   # for dlopen/dlsym in TfliteRuntime
 )
 
 install(TARGETS linux-voice-assistant-cpp RUNTIME DESTINATION bin)

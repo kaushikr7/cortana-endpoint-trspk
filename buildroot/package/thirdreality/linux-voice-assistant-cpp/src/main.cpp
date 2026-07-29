@@ -4,6 +4,7 @@
 #include <unistd.h>
 
 #include <atomic>
+#include <array>
 #include <chrono>
 #include <cerrno>
 #include <csignal>
@@ -14,10 +15,13 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
+#include <utility>
 
 #include <nlohmann/json.hpp>
 
+#include "audio/CapturePipeline.h"
 #include "config/EndpointConfig.h"
 #include "cortana/CurlSessionTransport.h"
 #include "cortana/Protocol.h"
@@ -74,6 +78,12 @@ void PrintUsage(const char* argv0) {
         "                           (default: /data/cortana/config.json)\n"
         "  --credential-file <p>   Cortana credential file\n"
         "                           (default: /data/cortana/credential)\n"
+        "  --capture-alsa-device <d>\n"
+        "                           ALSA capture device (default: hw:0,4)\n"
+        "  --capture-mic-channel <n>\n"
+        "                           0-based microphone channel (default: 0)\n"
+        "  --capture-ref-channels <r>\n"
+        "                           none, one, or two AEC channels (default: 2,3)\n"
         "  --debug                 Enable debug logging\n"
         "  --help                  Show this help and exit\n",
         argv0);
@@ -86,19 +96,66 @@ struct CliOptions {
     std::filesystem::path config_file = lva::config::kDefaultConfigPath;
     std::filesystem::path credential_file =
         lva::config::kDefaultCredentialPath;
+    std::string capture_alsa_device = "hw:0,4";
+    unsigned capture_mic_channel = 0;
+    std::array<int, 2> capture_ref_channels = {2, 3};
     bool debug = false;
 };
+
+bool ParseUnsigned(std::string_view text, unsigned* output) {
+    if (text.empty()) return false;
+    unsigned value = 0;
+    for (const char character : text) {
+        if (character < '0' || character > '9') return false;
+        value = value * 10 + static_cast<unsigned>(character - '0');
+        if (value > 255) return false;
+    }
+    *output = value;
+    return true;
+}
+
+bool ParseReferenceChannels(std::string_view text,
+                            std::array<int, 2>* output) {
+    if (text.empty() || text == "none") {
+        *output = {-1, -1};
+        return true;
+    }
+    const std::size_t comma = text.find(',');
+    if (comma != std::string_view::npos &&
+        text.find(',', comma + 1) != std::string_view::npos) {
+        return false;
+    }
+    unsigned first = 0;
+    unsigned second = 0;
+    if (!ParseUnsigned(text.substr(0, comma), &first)) return false;
+    if (comma == std::string_view::npos) {
+        *output = {static_cast<int>(first), -1};
+        return true;
+    }
+    if (!ParseUnsigned(text.substr(comma + 1), &second)) return false;
+    *output = {static_cast<int>(first), static_cast<int>(second)};
+    return true;
+}
 
 bool ParseCli(int argc, char** argv, CliOptions& output) {
     constexpr int kOptCheckConfig = 1000;
     constexpr int kOptStatus = 1001;
     constexpr int kOptConfigFile = 1002;
     constexpr int kOptCredentialFile = 1003;
+    constexpr int kOptCaptureAlsaDevice = 1004;
+    constexpr int kOptCaptureMicChannel = 1005;
+    constexpr int kOptCaptureRefChannels = 1006;
     static const option kOptions[] = {
         {"check-config", no_argument, nullptr, kOptCheckConfig},
         {"status", no_argument, nullptr, kOptStatus},
         {"config-file", required_argument, nullptr, kOptConfigFile},
         {"credential-file", required_argument, nullptr, kOptCredentialFile},
+        {"capture-alsa-device", required_argument, nullptr,
+         kOptCaptureAlsaDevice},
+        {"capture-mic-channel", required_argument, nullptr,
+         kOptCaptureMicChannel},
+        {"capture-ref-channels", required_argument, nullptr,
+         kOptCaptureRefChannels},
         {"debug", no_argument, nullptr, 'd'},
         {"help", no_argument, nullptr, 'h'},
         {nullptr, 0, nullptr, 0},
@@ -126,6 +183,22 @@ bool ParseCli(int argc, char** argv, CliOptions& output) {
                 break;
             case kOptConfigFile: output.config_file = optarg; break;
             case kOptCredentialFile: output.credential_file = optarg; break;
+            case kOptCaptureAlsaDevice:
+                output.capture_alsa_device = optarg;
+                break;
+            case kOptCaptureMicChannel:
+                if (!ParseUnsigned(optarg, &output.capture_mic_channel)) {
+                    std::fprintf(stderr, "Invalid capture microphone channel\n");
+                    return false;
+                }
+                break;
+            case kOptCaptureRefChannels:
+                if (!ParseReferenceChannels(
+                        optarg, &output.capture_ref_channels)) {
+                    std::fprintf(stderr, "Invalid capture reference channels\n");
+                    return false;
+                }
+                break;
             case 'd': output.debug = true; break;
             case 'h':
                 PrintUsage(argv[0]);
@@ -301,10 +374,22 @@ int main(int argc, char** argv) {
     lva::cortana::SessionClient session(config, std::move(dependencies));
     session.Start();
 
+    lva::audio::CapturePipeline::Options capture_options;
+    capture_options.capture.alsa_device = cli.capture_alsa_device;
+    capture_options.capture.mic_channel = cli.capture_mic_channel;
+    capture_options.capture.ref_channels = cli.capture_ref_channels;
+    lva::audio::CapturePipeline capture(std::move(capture_options));
+    if (!capture.Start()) {
+        LVA_LOGE(kTag, "%s", "continuous microphone capture is unavailable");
+        leds.SetSystem(lva::tr::LedState::Error);
+    }
+
     bool muted = false;
     lva::tr::MicMuteGpio mute_gpio(
-        [&session, &muted](bool new_muted, lva::tr::MuteChangeSource) {
+        [&session, &capture, &muted](
+            bool new_muted, lva::tr::MuteChangeSource) {
             muted = new_muted;
+            if (new_muted) (void)capture.DiscardQueued();
             (void)session.EnqueueText(
                 lva::cortana::SerializeMuteChanged(new_muted));
         });
@@ -334,6 +419,7 @@ int main(int argc, char** argv) {
     lva::cortana::SessionPhase logged_phase =
         lva::cortana::SessionPhase::Stopped;
     std::uint64_t mute_synced_generation = 0;
+    auto next_capture_metrics = std::chrono::steady_clock::now() + 30s;
     while (g_shutdown_signal.load(std::memory_order_relaxed) == 0) {
         if (home_button_fd >= 0) {
             pollfd descriptor{
@@ -354,6 +440,9 @@ int main(int argc, char** argv) {
 
         mute_gpio.Poll();
         leds.Poll();
+        // T3.2 replaces this deliberate drain with generation-aware 20 ms
+        // WSS frame transport. Never retain stale microphone latency.
+        (void)capture.DiscardQueued();
         while (session.TryPopEvent().has_value()) {
         }
 
@@ -373,9 +462,37 @@ int main(int argc, char** argv) {
             session.EnqueueText(lva::cortana::SerializeMuteChanged(muted))) {
             mute_synced_generation = snapshot.generation;
         }
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= next_capture_metrics) {
+            next_capture_metrics = now + 30s;
+            const auto metrics = capture.GetMetrics();
+            LVA_LOGI(kTag,
+                     "capture running=%d periods=%llu samples=%llu "
+                     "reference_periods=%llu queue=%zu/%zu high=%zu "
+                     "overrun=%llu discarded=%llu recoveries=%llu "
+                     "short_reads=%llu processing_failures=%llu max_us=%llu",
+                     metrics.running ? 1 : 0,
+                     static_cast<unsigned long long>(metrics.periods_captured),
+                     static_cast<unsigned long long>(metrics.samples_captured),
+                     static_cast<unsigned long long>(metrics.reference_periods),
+                     metrics.queue.queued_samples,
+                     metrics.queue.capacity_samples,
+                     metrics.queue.high_watermark_samples,
+                     static_cast<unsigned long long>(
+                         metrics.queue.samples_dropped),
+                     static_cast<unsigned long long>(
+                         metrics.queue.samples_discarded),
+                     static_cast<unsigned long long>(metrics.recoveries),
+                     static_cast<unsigned long long>(metrics.short_reads),
+                     static_cast<unsigned long long>(
+                         metrics.processing_failures),
+                     static_cast<unsigned long long>(
+                         metrics.maximum_processing_us));
+        }
     }
 
     home_button.Stop();
+    capture.Stop();
     session.Stop();
     const int signal = g_shutdown_signal.load(std::memory_order_relaxed);
     LVA_LOGI(kTag, "exiting after signal %d", signal);

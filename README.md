@@ -18,8 +18,9 @@ The retained `linux-voice-assistant-cpp` binary name now hosts:
 - centralized ring LED state, home-button input, and mute GPIO handling.
 
 There is no ESPHome listener, Home Assistant discovery, protobuf control
-plane, Sendspin client, or supervisor HTTP API. Continuous microphone ingress
-and Cortana playback are being connected in the subsequent plan phases.
+plane, Sendspin client, or supervisor HTTP API. Continuous ALSA capture and
+hardware-loopback AEC now feed a bounded local PCM queue; WSS microphone
+transport and Cortana playback follow in subsequent plan phases.
 
 ## Repository setup
 
@@ -54,6 +55,7 @@ These checks do not build firmware or access a device:
 ./script/test_cortana_protocol.sh
 ./script/test_device_ticket.sh
 ./script/test_cortana_session.sh
+./script/test_capture_pipeline.sh
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
   -s tools/tests -p 'test_*.py'
 ```

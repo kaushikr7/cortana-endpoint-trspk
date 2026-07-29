@@ -11,12 +11,14 @@ The current runtime provides:
 - authenticated WSS negotiation, keepalive, reconnect, and bounded queues;
 - one-connection replacement handling for the provisioned satellite ID;
 - centralized ring LED state for boot, connection, turn, and blocked errors;
-- local home-button and dedicated mute-button handling.
+- local home-button and dedicated mute-button handling;
+- continuous ALSA microphone capture with hardware-loopback AEC and bounded
+  queue/timing metrics.
 
 ESPHome framing, protobuf, TCP port 6053, Home Assistant entities, mDNS
 discovery, the HA satellite state machine, and the legacy supervisor/OTA HTTP
-surface have been removed. Audio capture and playback are connected to the
-Cortana session in later implementation tickets.
+surface have been removed. The local PCM queue is connected to WSS and playback
+in later implementation tickets.
 
 ## Runtime
 
@@ -33,6 +35,9 @@ Supported options:
 --status                   Print redacted Cortana config status as JSON
 --config-file <path>       Override /data/cortana/config.json
 --credential-file <path>   Override /data/cortana/credential
+--capture-alsa-device <d>  Override hw:0,4
+--capture-mic-channel <n>  Select the interleaved microphone channel
+--capture-ref-channels <r> Select none, one, or two AEC reference channels
 --debug                    Enable debug logging
 --help                     Show help
 ```

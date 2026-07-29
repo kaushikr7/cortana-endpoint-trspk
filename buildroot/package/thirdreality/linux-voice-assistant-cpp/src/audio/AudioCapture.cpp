@@ -1,16 +1,15 @@
 #include "audio/AudioCapture.h"
 
+#include <alsa/asoundlib.h>
+
 #include <algorithm>
-#include <cmath>
-#include <cstring>
+#include <cerrno>
+#include <chrono>
+#include <cstdint>
+#include <utility>
 #include <vector>
 
-#include <alsa/asoundlib.h>
-#include <pulse/error.h>
-#include <pulse/sample.h>
-#include <pulse/simple.h>
-
-#include "audio/PcmRingBuffer.h"
+#include "audio/CaptureFrame.h"
 #include "audio/WebRtcProcessor.h"
 #include "util/Log.h"
 
@@ -18,341 +17,286 @@ namespace lva::audio {
 
 namespace {
 
-constexpr const char* kTag         = "capture";
-constexpr unsigned    kSampleRate  = 16'000;
-constexpr unsigned    kMonoChannels = 1;
-constexpr const char* kClientName  = "linux-voice-assistant-cpp";
-constexpr const char* kStreamName  = "wake-word capture";
+constexpr const char* kTag = "capture";
+constexpr unsigned kSampleRate = 16'000;
+constexpr std::size_t kWebRtcPeriodSamples = 160;
+
+std::uint64_t MonotonicNanoseconds() noexcept {
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+}
 
 }  // namespace
 
-AudioCapture::AudioCapture(const Options& opts, PcmRingBuffer& ring)
-    : opts_(opts), ring_(ring) {}
-
-void AudioCapture::AddTap(PcmRingBuffer& ring) {
-    if (running_.load(std::memory_order_relaxed)) {
-        LVA_LOGW(kTag, "AddTap called after Start; ignoring");
-        return;
-    }
-    taps_.push_back(&ring);
-}
-
-void AudioCapture::SetProcessor(WebRtcProcessor* processor) {
-    if (running_.load(std::memory_order_relaxed)) {
-        LVA_LOGW(kTag, "SetProcessor called after Start; ignoring");
-        return;
-    }
-    processor_ = processor;
-}
+AudioCapture::AudioCapture(Options options, PcmRingBuffer& queue)
+    : options_(std::move(options)), queue_(queue) {}
 
 AudioCapture::~AudioCapture() {
     Stop();
 }
 
-bool AudioCapture::Start() {
+void AudioCapture::SetProcessor(WebRtcProcessor* processor) {
     if (running_.load(std::memory_order_relaxed)) {
-        LVA_LOGD(kTag, "Start: already running, ignoring");
-        return true;
+        LVA_LOGW(kTag, "%s", "SetProcessor called after Start; ignoring");
+        return;
     }
-    stop_requested_.store(false, std::memory_order_relaxed);
-    samples_captured_.store(0, std::memory_order_relaxed);
-    dropped_samples_  = 0;
-    last_drop_log_at_ = 0;
+    processor_ = processor;
+}
 
-    if (opts_.backend == Backend::kAlsa) {
-        snd_pcm_t* pcm = nullptr;
-        int rc = ::snd_pcm_open(&pcm, opts_.alsa_device.c_str(),
-                                SND_PCM_STREAM_CAPTURE, 0);
-        if (rc < 0) {
-            LVA_LOGE(kTag, "snd_pcm_open(%s) failed: %s",
-                     opts_.alsa_device.c_str(), ::snd_strerror(rc));
-            return false;
-        }
+bool AudioCapture::Start() {
+    if (running_.load(std::memory_order_relaxed)) return true;
+    if (thread_.joinable()) thread_.join();
 
-        snd_pcm_hw_params_t* hw = nullptr;
-        snd_pcm_hw_params_alloca(&hw);
-
-        if ((rc = ::snd_pcm_hw_params_any(pcm, hw)) < 0) {
-            LVA_LOGE(kTag, "hw_params_any: %s", ::snd_strerror(rc));
-            ::snd_pcm_close(pcm); return false;
-        }
-        if ((rc = ::snd_pcm_hw_params_set_access(
-                 pcm, hw, SND_PCM_ACCESS_RW_INTERLEAVED)) < 0) {
-            LVA_LOGE(kTag, "set_access: %s", ::snd_strerror(rc));
-            ::snd_pcm_close(pcm); return false;
-        }
-        if ((rc = ::snd_pcm_hw_params_set_format(
-                 pcm, hw, SND_PCM_FORMAT_S16_LE)) < 0) {
-            LVA_LOGE(kTag, "set_format S16_LE: %s", ::snd_strerror(rc));
-            ::snd_pcm_close(pcm); return false;
-        }
-        if ((rc = ::snd_pcm_hw_params_set_channels(
-                 pcm, hw, opts_.alsa_channels)) < 0) {
-            LVA_LOGE(kTag, "set_channels %u: %s",
-                     opts_.alsa_channels, ::snd_strerror(rc));
-            ::snd_pcm_close(pcm); return false;
-        }
-        unsigned rate = kSampleRate;
-        if ((rc = ::snd_pcm_hw_params_set_rate_near(
-                 pcm, hw, &rate, nullptr)) < 0) {
-            LVA_LOGE(kTag, "set_rate_near %u: %s",
-                     kSampleRate, ::snd_strerror(rc));
-            ::snd_pcm_close(pcm); return false;
-        }
-        if (rate != kSampleRate) {
-            LVA_LOGW(kTag, "alsa gave us rate %u, expected %u",
-                     rate, kSampleRate);
-        }
-
-        snd_pcm_uframes_t period_frames = opts_.frames_per_read;
-        if ((rc = ::snd_pcm_hw_params_set_period_size_near(
-                 pcm, hw, &period_frames, nullptr)) < 0) {
-            LVA_LOGE(kTag, "set_period_size_near: %s",
-                     ::snd_strerror(rc));
-            ::snd_pcm_close(pcm); return false;
-        }
-        snd_pcm_uframes_t buffer_frames = kSampleRate / 2;
-        if ((rc = ::snd_pcm_hw_params_set_buffer_size_near(
-                 pcm, hw, &buffer_frames)) < 0) {
-            LVA_LOGE(kTag, "set_buffer_size_near: %s",
-                     ::snd_strerror(rc));
-            ::snd_pcm_close(pcm); return false;
-        }
-
-        if ((rc = ::snd_pcm_hw_params(pcm, hw)) < 0) {
-            LVA_LOGE(kTag, "snd_pcm_hw_params commit: %s",
-                     ::snd_strerror(rc));
-            ::snd_pcm_close(pcm); return false;
-        }
-
-        alsa_handle_ = pcm;
-        running_.store(true, std::memory_order_relaxed);
-        thread_ = std::thread([this] { ThreadLoopAlsa(); });
-
-        LVA_LOGI(kTag,
-                 "started alsa (device=%s rate=%u ch=%u period=%lu "
-                 "buffer=%lu mic_ch=%u ref=(%d,%d))",
-                 opts_.alsa_device.c_str(), rate, opts_.alsa_channels,
-                 static_cast<unsigned long>(period_frames),
-                 static_cast<unsigned long>(buffer_frames),
-                 opts_.mic_channel,
-                 opts_.ref_channels[0], opts_.ref_channels[1]);
-        return true;
-    }
-
-    // ----- PulseAudio capture (legacy / fallback) -----
-    pa_sample_spec spec{};
-    spec.format   = PA_SAMPLE_S16LE;
-    spec.rate     = kSampleRate;
-    spec.channels = static_cast<std::uint8_t>(kMonoChannels);
-
-    pa_buffer_attr attr{};
-    attr.maxlength = static_cast<std::uint32_t>(-1);
-    attr.fragsize  = pa_usec_to_bytes(opts_.buffer_latency_us, &spec);
-
-    int err = 0;
-    pa_simple* pa = pa_simple_new(
-        /*server=*/nullptr,
-        kClientName,
-        PA_STREAM_RECORD,
-        opts_.source.empty() ? nullptr : opts_.source.c_str(),
-        kStreamName,
-        &spec,
-        /*channel_map=*/nullptr,
-        &attr,
-        &err);
-    if (pa == nullptr) {
-        LVA_LOGE(kTag, "pa_simple_new failed: %s",
-                 pa_strerror(err));
+    const CaptureChannelLayout layout{
+        .channels = options_.alsa_channels,
+        .microphone = options_.mic_channel,
+        .reference = options_.ref_channels,
+    };
+    if (!ValidateCaptureLayout(layout) ||
+        options_.frames_per_read != kWebRtcPeriodSamples) {
+        LVA_LOGE(kTag,
+                 "invalid ALSA capture layout or period "
+                 "(channels=%u mic=%u ref=%d,%d period=%zu)",
+                 options_.alsa_channels, options_.mic_channel,
+                 options_.ref_channels[0], options_.ref_channels[1],
+                 options_.frames_per_read);
         return false;
     }
 
-    pa_handle_ = pa;
-    running_.store(true, std::memory_order_relaxed);
-    thread_ = std::thread([this] { ThreadLoopPulse(); });
+    snd_pcm_t* pcm = nullptr;
+    int result = ::snd_pcm_open(&pcm, options_.alsa_device.c_str(),
+                                SND_PCM_STREAM_CAPTURE, 0);
+    if (result < 0) {
+        LVA_LOGE(kTag, "snd_pcm_open(%s) failed: %s",
+                 options_.alsa_device.c_str(), ::snd_strerror(result));
+        return false;
+    }
+
+    snd_pcm_hw_params_t* hardware = nullptr;
+    snd_pcm_hw_params_alloca(&hardware);
+    auto fail = [&](const char* operation, int error) {
+        LVA_LOGE(kTag, "%s failed: %s", operation, ::snd_strerror(error));
+        ::snd_pcm_close(pcm);
+        return false;
+    };
+
+    if ((result = ::snd_pcm_hw_params_any(pcm, hardware)) < 0) {
+        return fail("snd_pcm_hw_params_any", result);
+    }
+    if ((result = ::snd_pcm_hw_params_set_access(
+             pcm, hardware, SND_PCM_ACCESS_RW_INTERLEAVED)) < 0) {
+        return fail("snd_pcm_hw_params_set_access", result);
+    }
+    if ((result = ::snd_pcm_hw_params_set_format(
+             pcm, hardware, SND_PCM_FORMAT_S16_LE)) < 0) {
+        return fail("snd_pcm_hw_params_set_format", result);
+    }
+    if ((result = ::snd_pcm_hw_params_set_channels(
+             pcm, hardware, options_.alsa_channels)) < 0) {
+        return fail("snd_pcm_hw_params_set_channels", result);
+    }
+    unsigned rate = kSampleRate;
+    if ((result = ::snd_pcm_hw_params_set_rate_near(
+             pcm, hardware, &rate, nullptr)) < 0) {
+        return fail("snd_pcm_hw_params_set_rate_near", result);
+    }
+    if (rate != kSampleRate) {
+        LVA_LOGE(kTag, "ALSA selected rate %u instead of %u", rate,
+                 kSampleRate);
+        ::snd_pcm_close(pcm);
+        return false;
+    }
+
+    snd_pcm_uframes_t period = options_.frames_per_read;
+    if ((result = ::snd_pcm_hw_params_set_period_size_near(
+             pcm, hardware, &period, nullptr)) < 0) {
+        return fail("snd_pcm_hw_params_set_period_size_near", result);
+    }
+    if (period != options_.frames_per_read) {
+        LVA_LOGE(kTag, "ALSA selected period %lu instead of %zu",
+                 static_cast<unsigned long>(period),
+                 options_.frames_per_read);
+        ::snd_pcm_close(pcm);
+        return false;
+    }
+    snd_pcm_uframes_t buffer_frames = kSampleRate / 2;
+    if ((result = ::snd_pcm_hw_params_set_buffer_size_near(
+             pcm, hardware, &buffer_frames)) < 0) {
+        return fail("snd_pcm_hw_params_set_buffer_size_near", result);
+    }
+    if ((result = ::snd_pcm_hw_params(pcm, hardware)) < 0) {
+        return fail("snd_pcm_hw_params", result);
+    }
+    snd_pcm_uframes_t actual_buffer = 0;
+    snd_pcm_uframes_t actual_period = 0;
+    if ((result = ::snd_pcm_get_params(
+             pcm, &actual_buffer, &actual_period)) < 0) {
+        return fail("snd_pcm_get_params", result);
+    }
+    if (actual_period != options_.frames_per_read) {
+        LVA_LOGE(kTag, "ALSA committed period %lu instead of %zu",
+                 static_cast<unsigned long>(actual_period),
+                 options_.frames_per_read);
+        ::snd_pcm_close(pcm);
+        return false;
+    }
+
+    queue_.Reset();
+    periods_captured_.store(0, std::memory_order_relaxed);
+    samples_captured_.store(0, std::memory_order_relaxed);
+    reference_periods_.store(0, std::memory_order_relaxed);
+    recoveries_.store(0, std::memory_order_relaxed);
+    short_reads_.store(0, std::memory_order_relaxed);
+    processing_failures_.store(0, std::memory_order_relaxed);
+    last_period_monotonic_ns_.store(0, std::memory_order_relaxed);
+    maximum_processing_us_.store(0, std::memory_order_relaxed);
+    stop_requested_.store(false, std::memory_order_relaxed);
+    alsa_handle_ = pcm;
+    running_.store(true, std::memory_order_release);
+    thread_ = std::thread([this] { ThreadLoop(); });
 
     LVA_LOGI(kTag,
-             "started pulse (rate=%u ch=%u frames_per_read=%zu source=%s)",
-             kSampleRate, kMonoChannels, opts_.frames_per_read,
-             opts_.source.empty() ? "default" : opts_.source.c_str());
+             "started ALSA device=%s rate=%u channels=%u period=%zu "
+             "buffer=%lu mic=%u reference=%d,%d queue=%zu",
+             options_.alsa_device.c_str(), kSampleRate,
+             options_.alsa_channels, options_.frames_per_read,
+             static_cast<unsigned long>(actual_buffer),
+             options_.mic_channel, options_.ref_channels[0],
+             options_.ref_channels[1], queue_.Capacity());
     return true;
 }
 
 void AudioCapture::Stop() {
-    if (!running_.load(std::memory_order_relaxed)) return;
-
-    // The capture thread owns handle teardown — closing the pa/alsa
-    // handle here would race a blocking read on it (use-after-free).
-    // Just signal and join; reads return within a period/buffer.
-    stop_requested_.store(true, std::memory_order_relaxed);
-
-    if (thread_.joinable()) {
-        thread_.join();
-    }
-    running_.store(false, std::memory_order_relaxed);
-    LVA_LOGI(kTag, "stopped (captured %llu samples)",
-             static_cast<unsigned long long>(
-                 samples_captured_.load(std::memory_order_relaxed)));
+    stop_requested_.store(true, std::memory_order_release);
+    if (thread_.joinable()) thread_.join();
+    running_.store(false, std::memory_order_release);
 }
 
-void AudioCapture::PostFrame(std::int16_t* mic, std::size_t n) {
-    if (mic_volume_ptr_ != nullptr) {
-        const int vol = mic_volume_ptr_->load(std::memory_order_relaxed);
-        if (vol > 0 && vol < 100) {
-            const float gain = static_cast<float>(vol) / 100.0f;
-            for (std::size_t i = 0; i < n; ++i) {
-                const long scaled =
-                    std::lround(static_cast<float>(mic[i]) * gain);
-                const long clamped =
-                    std::clamp(scaled, -32768L, 32767L);
-                mic[i] = static_cast<std::int16_t>(clamped);
-            }
-        }
-    }
-
-    const std::size_t written = ring_.Write(mic, n);
-    if (written < n) {
-        const std::size_t dropped = n - written;
-        dropped_samples_ += dropped;
-        if (dropped_samples_ - last_drop_log_at_ >= 160'000) {
-            LVA_LOGW(kTag,
-                     "ring overrun: %llu samples dropped since start",
-                     static_cast<unsigned long long>(dropped_samples_));
-            last_drop_log_at_ = dropped_samples_;
-        }
-    }
-    for (PcmRingBuffer* tap : taps_) {
-        tap->Write(mic, n);
-    }
-    samples_captured_.fetch_add(written, std::memory_order_relaxed);
+AudioCaptureMetrics AudioCapture::GetMetrics() const noexcept {
+    return {
+        .running = running_.load(std::memory_order_relaxed),
+        .aec_reference_enabled = options_.ref_channels[0] >= 0,
+        .period_samples = options_.frames_per_read,
+        .periods_captured = periods_captured_.load(std::memory_order_relaxed),
+        .samples_captured = samples_captured_.load(std::memory_order_relaxed),
+        .reference_periods =
+            reference_periods_.load(std::memory_order_relaxed),
+        .recoveries = recoveries_.load(std::memory_order_relaxed),
+        .short_reads = short_reads_.load(std::memory_order_relaxed),
+        .processing_failures =
+            processing_failures_.load(std::memory_order_relaxed),
+        .last_period_monotonic_ns =
+            last_period_monotonic_ns_.load(std::memory_order_relaxed),
+        .maximum_processing_us =
+            maximum_processing_us_.load(std::memory_order_relaxed),
+        .queue = queue_.GetMetrics(),
+    };
 }
 
-void AudioCapture::ThreadLoopPulse() {
-    std::vector<std::int16_t> chunk(opts_.frames_per_read);
-    const std::size_t bytes_per_read =
-        chunk.size() * sizeof(std::int16_t);
-
-    pa_simple* pa = static_cast<pa_simple*>(pa_handle_);
-
-    while (!stop_requested_.load(std::memory_order_relaxed)) {
-        if (pa == nullptr) break;
-
-        int err = 0;
-        const int rc = pa_simple_read(pa, chunk.data(),
-                                      bytes_per_read, &err);
-        if (rc < 0) {
-            if (!stop_requested_.load(std::memory_order_relaxed)) {
-                LVA_LOGE(kTag, "pa_simple_read failed: %s",
-                         pa_strerror(err));
-            }
-            break;
-        }
-
-        if (processor_ != nullptr) {
-            processor_->Process(chunk.data(), chunk.size());
-        }
-
-        PostFrame(chunk.data(), chunk.size());
+void AudioCapture::RecordMaximumProcessing(
+    std::chrono::steady_clock::duration duration) noexcept {
+    const auto microseconds = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(duration).count());
+    std::uint64_t maximum =
+        maximum_processing_us_.load(std::memory_order_relaxed);
+    while (microseconds > maximum &&
+           !maximum_processing_us_.compare_exchange_weak(
+               maximum, microseconds, std::memory_order_relaxed)) {
     }
-
-    // The capture thread owns handle teardown (see Stop()).
-    if (pa != nullptr) {
-        pa_simple_free(pa);
-        pa_handle_ = nullptr;
-    }
-    LVA_LOGD(kTag, "pulse thread exiting");
 }
 
-void AudioCapture::ThreadLoopAlsa() {
-    const std::size_t period = opts_.frames_per_read;
-    const unsigned    nch    = opts_.alsa_channels;
-    std::vector<std::int16_t> il(period * nch);
-    std::vector<std::int16_t> mic(period);
-    std::vector<std::int16_t> ref(period);
-
-    const int  ref_a = opts_.ref_channels[0];
-    const int  ref_b = opts_.ref_channels[1];
-    const bool have_ref     = (ref_a >= 0);
-    const bool single_ref   = (ref_a >= 0 && ref_b < 0);
-    const unsigned mic_ch   = opts_.mic_channel;
-
+void AudioCapture::ThreadLoop() {
+    const std::size_t period = options_.frames_per_read;
+    const CaptureChannelLayout layout{
+        .channels = options_.alsa_channels,
+        .microphone = options_.mic_channel,
+        .reference = options_.ref_channels,
+    };
+    const bool has_reference = options_.ref_channels[0] >= 0;
+    std::vector<std::int16_t> interleaved(period * options_.alsa_channels);
+    std::vector<std::int16_t> microphone(period);
+    std::vector<std::int16_t> reference(period);
     snd_pcm_t* pcm = static_cast<snd_pcm_t*>(alsa_handle_);
+    std::uint64_t last_logged_drops = 0;
 
-    while (!stop_requested_.load(std::memory_order_relaxed)) {
-        if (pcm == nullptr) break;
-
-        snd_pcm_sframes_t r = ::snd_pcm_readi(pcm, il.data(), period);
-        if (r < 0) {
-            const int err = static_cast<int>(r);
-            if (err == -EPIPE || err == -ESTRPIPE || err == -EINTR ||
-                err == -EIO) {
-                if (!stop_requested_.load(std::memory_order_relaxed)) {
-                    LVA_LOGW(kTag, "alsa readi %s; recovering",
-                             ::snd_strerror(err));
-                }
-                if (::snd_pcm_recover(pcm, err, /*silent=*/1) < 0) {
-                    if (!stop_requested_.load(std::memory_order_relaxed)) {
-                        LVA_LOGE(kTag, "snd_pcm_recover failed");
-                    }
-                    break;
-                }
-                // Recover dropped samples → mic/ref no longer aligned;
-                // reset the AEC so it re-converges instead of leaking.
-                if (processor_ != nullptr && have_ref) {
+    while (!stop_requested_.load(std::memory_order_acquire)) {
+        const snd_pcm_sframes_t read =
+            ::snd_pcm_readi(pcm, interleaved.data(), period);
+        if (read < 0) {
+            const int error = static_cast<int>(read);
+            if (error == -EPIPE || error == -ESTRPIPE || error == -EINTR ||
+                error == -EIO) {
+                if (::snd_pcm_recover(pcm, error, 1) < 0) break;
+                recoveries_.fetch_add(1, std::memory_order_relaxed);
+                if (processor_ != nullptr && has_reference) {
                     processor_->ResetEcho();
                 }
                 continue;
             }
             if (!stop_requested_.load(std::memory_order_relaxed)) {
-                LVA_LOGE(kTag, "alsa readi: %s", ::snd_strerror(err));
+                LVA_LOGE(kTag, "snd_pcm_readi failed: %s",
+                         ::snd_strerror(error));
             }
             break;
         }
-        if (static_cast<std::size_t>(r) != period) {
-            // Short read: skip the partial frame rather than zero-pad
-            // it (padding would desync the AEC). Reset and retry.
-            if (!stop_requested_.load(std::memory_order_relaxed)) {
-                LVA_LOGW(kTag, "alsa short read: %ld/%zu frames; skipping",
-                         static_cast<long>(r), period);
-            }
-            if (processor_ != nullptr && have_ref) {
+        if (static_cast<std::size_t>(read) != period) {
+            short_reads_.fetch_add(1, std::memory_order_relaxed);
+            if (processor_ != nullptr && has_reference) {
                 processor_->ResetEcho();
             }
             continue;
         }
 
-        // De-interleave into mic + ref mono buffers.
-        for (std::size_t i = 0; i < period; ++i) {
-            const std::int16_t* row = il.data() + i * nch;
-            mic[i] = row[mic_ch];
-            if (have_ref) {
-                if (single_ref) {
-                    ref[i] = row[ref_a];
-                } else {
-                    const int32_t s =
-                        static_cast<int32_t>(row[ref_a]) +
-                        static_cast<int32_t>(row[ref_b]);
-                    ref[i] = static_cast<std::int16_t>(s >> 1);
+        const auto processing_started = std::chrono::steady_clock::now();
+        if (!SplitCapturePeriod(interleaved, period, layout, microphone,
+                                reference)) {
+            processing_failures_.fetch_add(1, std::memory_order_relaxed);
+            break;
+        }
+
+        bool processed = true;
+        if (processor_ != nullptr) {
+            if (has_reference) {
+                processed = processor_->ProcessReverse(
+                    reference.data(), period);
+                if (processed) {
+                    reference_periods_.fetch_add(
+                        1, std::memory_order_relaxed);
                 }
             }
+            processed = processed &&
+                processor_->Process(microphone.data(), period);
+        }
+        if (!processed) {
+            processing_failures_.fetch_add(1, std::memory_order_relaxed);
+            continue;
         }
 
-        if (processor_ != nullptr) {
-            if (have_ref) {
-                processor_->ProcessReverse(ref.data(), period);
-            }
-            processor_->Process(mic.data(), period);
+        (void)queue_.Write(microphone.data(), period);
+        periods_captured_.fetch_add(1, std::memory_order_relaxed);
+        samples_captured_.fetch_add(period, std::memory_order_relaxed);
+        last_period_monotonic_ns_.store(
+            MonotonicNanoseconds(), std::memory_order_relaxed);
+        RecordMaximumProcessing(
+            std::chrono::steady_clock::now() - processing_started);
+
+        const auto queue_metrics = queue_.GetMetrics();
+        if (queue_metrics.samples_dropped - last_logged_drops >= 160'000) {
+            last_logged_drops = queue_metrics.samples_dropped;
+            LVA_LOGW(kTag, "bounded PCM queue dropped %llu samples",
+                     static_cast<unsigned long long>(last_logged_drops));
         }
-
-        PostFrame(mic.data(), period);
     }
 
-    // The capture thread owns handle teardown (see Stop()).
-    if (pcm != nullptr) {
-        ::snd_pcm_close(pcm);
-        alsa_handle_ = nullptr;
-    }
-    LVA_LOGD(kTag, "alsa thread exiting");
+    ::snd_pcm_close(pcm);
+    alsa_handle_ = nullptr;
+    running_.store(false, std::memory_order_release);
+    LVA_LOGI(kTag, "capture stopped periods=%llu samples=%llu",
+             static_cast<unsigned long long>(
+                 periods_captured_.load(std::memory_order_relaxed)),
+             static_cast<unsigned long long>(
+                 samples_captured_.load(std::memory_order_relaxed)));
 }
 
 }  // namespace lva::audio
