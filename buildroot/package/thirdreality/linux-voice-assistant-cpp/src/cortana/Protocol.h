@@ -125,6 +125,8 @@ using ServerEvent = std::variant<
 
 Capabilities ContinuousDeviceCapabilities();
 void ValidateCapabilities(const Capabilities& capabilities);
+std::string SerializeCapabilitiesJson(const Capabilities& capabilities);
+Capabilities ParseCapabilitiesJson(std::string_view payload);
 
 std::string SerializeSessionAuthenticate(std::string_view ticket);
 std::string SerializeSessionCapabilities(const Capabilities& capabilities);

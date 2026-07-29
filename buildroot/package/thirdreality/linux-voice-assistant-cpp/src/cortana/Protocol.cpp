@@ -250,6 +250,14 @@ void ValidateCapabilities(const Capabilities& capabilities) {
     }
 }
 
+std::string SerializeCapabilitiesJson(const Capabilities& capabilities) {
+    return Dump(CapabilitiesToJson(capabilities));
+}
+
+Capabilities ParseCapabilitiesJson(std::string_view payload) {
+    return ParseCapabilities(ParseJson(payload));
+}
+
 std::string SerializeSessionAuthenticate(std::string_view ticket) {
     if (ticket.size() < 32 || ticket.size() > 4096) {
         throw ProtocolError("ticket has invalid length");

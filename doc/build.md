@@ -791,6 +791,12 @@ optional WebSocket wrapper uses a disposable host installation of
   exposes the required WebSocket API. If it does not, change the library choice
   here rather than adding a compatibility shim throughout the endpoint.
 
+Implementation paths are `src/cortana/DeviceTicket.{h,cpp}` and
+`DeviceTicketClient.{h,cpp}`. The Buildroot package now forces OpenSSL, the CA
+bundle, and libcurl WebSocket support. `LibcurlSupportsWebSockets()` provides
+the runtime target check for the later session client; executing that check is
+deferred until the first planned firmware build.
+
 #### T2.3 WebSocket session lifecycle — High
 
 - Implement authenticated WSS, capability negotiation, ping, reconnect,

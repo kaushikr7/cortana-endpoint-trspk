@@ -158,6 +158,8 @@ target_compile_options(lva_microfrontend PRIVATE
 add_executable(linux-voice-assistant-cpp
     src/main.cpp
     src/config/EndpointConfig.cpp
+    src/cortana/DeviceTicket.cpp
+    src/cortana/DeviceTicketClient.cpp
     src/cortana/Protocol.cpp
     src/protocol/Frame.cpp
     src/protocol/MessageRegistry.cpp
