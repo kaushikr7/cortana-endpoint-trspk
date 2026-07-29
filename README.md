@@ -89,6 +89,8 @@ service.
 On native Windows PowerShell, use the companion script with Windows `adb.exe`:
 
 ```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+
 .\script\provision_cortana_endpoint.ps1 provision `
   -Serial a8e29151d253 `
   -Endpoint https://cortana.raintreeresearch.com `
