@@ -20,7 +20,8 @@ REMOTE_DIR = "/data/cortana"
 REMOTE_CONFIG = f"{REMOTE_DIR}/config.json"
 REMOTE_CREDENTIAL = f"{REMOTE_DIR}/credential"
 DEFAULT_ENDPOINT_BINARY = "/usr/bin/linux-voice-assistant-cpp"
-IDENTIFIER_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+SATELLITE_ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
+AREA_ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
 MIN_CREDENTIAL_BYTES = 32
 MAX_CREDENTIAL_BYTES = 4096
@@ -43,11 +44,15 @@ class AdbTarget:
         return command
 
 
-def validate_identifier(value: str, field: str) -> str:
-    if not IDENTIFIER_RE.fullmatch(value):
-        raise ProvisionError(
-            f"{field} must match [a-z0-9][a-z0-9_-]{{0,63}}"
-        )
+def validate_satellite_id(value: str) -> str:
+    if not SATELLITE_ID_RE.fullmatch(value):
+        raise ProvisionError("satellite ID must match [a-z][a-z0-9-]{0,63}")
+    return value
+
+
+def validate_area_id(value: str) -> str:
+    if not AREA_ID_RE.fullmatch(value):
+        raise ProvisionError("expected area ID must match [a-z][a-z0-9_]{0,63}")
     return value
 
 
@@ -140,12 +145,10 @@ def check_remote_config(target: AdbTarget, endpoint_binary: str) -> None:
 
 def provision(args: argparse.Namespace) -> int:
     endpoint = validate_endpoint(args.endpoint)
-    satellite_id = validate_identifier(args.satellite_id, "satellite ID")
+    satellite_id = validate_satellite_id(args.satellite_id)
     expected_area_id = None
     if args.expected_area_id is not None:
-        expected_area_id = validate_identifier(
-            args.expected_area_id, "expected area ID"
-        )
+        expected_area_id = validate_area_id(args.expected_area_id)
     credential = read_credential()
 
     document: dict[str, object] = {

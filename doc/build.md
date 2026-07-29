@@ -778,6 +778,11 @@ button, and LED behavior no longer require Home Assistant state.
 - Cover valid handshake, capability mismatch, malformed/unknown control events,
   authentication rejection, and playback event ordering.
 
+Implementation paths are `src/cortana/Protocol.{h,cpp}` and
+`tools/fake_cortana_server.py`. The fake session core is dependency-free; its
+optional WebSocket wrapper uses a disposable host installation of
+`websockets>=13,<16`.
+
 #### T2.2 Ticket client and TLS — Medium
 
 - Implement ticket POST, expiry handling, credential redaction, CA validation,

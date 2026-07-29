@@ -63,6 +63,17 @@ Run the host-only physical-control tests without building firmware:
 
 ```bash
 ./script/test_device_controls.sh
+./script/test_cortana_protocol.sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
+  -s tools/tests -p 'test_*.py'
+```
+
+The T2.1 fake session has no runtime dependency for its unit tests. To expose it
+as a local WebSocket server for later client work, install
+`websockets>=13,<16` in a disposable host environment and run:
+
+```bash
+./tools/fake_cortana_server.py
 ```
 
 ### Native Build

@@ -30,15 +30,30 @@ class ValidationTests(unittest.TestCase):
                 with self.assertRaises(provision.ProvisionError):
                     provision.validate_endpoint(endpoint)
 
-    def test_identifiers_are_lowercase_and_bounded(self) -> None:
+    def test_satellite_ids_match_the_ticket_endpoint_contract(self) -> None:
         self.assertEqual(
-            provision.validate_identifier("study-voice_1", "satellite ID"),
-            "study-voice_1",
+            provision.validate_satellite_id("study-voice-1"),
+            "study-voice-1",
         )
-        for identifier in ("", "Study", "-study", "study.voice", "x" * 65):
+        for identifier in (
+            "",
+            "Study",
+            "1-study",
+            "study_voice",
+            "study.voice",
+            "x" * 65,
+        ):
             with self.subTest(identifier=identifier):
                 with self.assertRaises(provision.ProvisionError):
-                    provision.validate_identifier(identifier, "satellite ID")
+                    provision.validate_satellite_id(identifier)
+
+    def test_area_ids_use_server_area_grammar(self) -> None:
+        self.assertEqual(provision.validate_area_id("guest_bathroom"),
+                         "guest_bathroom")
+        for identifier in ("", "Guest", "1study", "guest-bathroom"):
+            with self.subTest(identifier=identifier):
+                with self.assertRaises(provision.ProvisionError):
+                    provision.validate_area_id(identifier)
 
     def test_credential_is_printable_and_long_enough(self) -> None:
         credential = b"a" * 32

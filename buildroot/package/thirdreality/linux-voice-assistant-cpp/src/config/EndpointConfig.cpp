@@ -127,15 +127,21 @@ std::string ReadProtectedFile(const std::filesystem::path& path,
     return result;
 }
 
-bool IsIdentifier(std::string_view value) {
+bool IsSatelliteId(std::string_view value) {
     if (value.empty() || value.size() > 64) return false;
-    if (!((value.front() >= 'a' && value.front() <= 'z') ||
-          (value.front() >= '0' && value.front() <= '9'))) {
-        return false;
-    }
+    if (value.front() < 'a' || value.front() > 'z') return false;
     return std::all_of(value.begin(), value.end(), [](char c) {
         return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
-               c == '-' || c == '_';
+               c == '-';
+    });
+}
+
+bool IsAreaId(std::string_view value) {
+    if (value.empty() || value.size() > 64) return false;
+    if (value.front() < 'a' || value.front() > 'z') return false;
+    return std::all_of(value.begin(), value.end(), [](char c) {
+        return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+               c == '_';
     });
 }
 
@@ -247,9 +253,9 @@ EndpointConfig EndpointConfig::Load(
             throw ConfigError("config field 'expectedAreaId' must be a string");
         }
         result.expected_area_id = area->get<std::string>();
-        if (!IsIdentifier(result.expected_area_id)) {
+        if (!IsAreaId(result.expected_area_id)) {
             throw ConfigError("config field 'expectedAreaId' must match "
-                              "[a-z0-9][a-z0-9_-]{0,63}");
+                              "[a-z][a-z0-9_]{0,63}");
         }
     }
 
@@ -258,9 +264,9 @@ EndpointConfig EndpointConfig::Load(
                           "without a path, query, or credentials");
     }
     if (result.endpoint.back() == '/') result.endpoint.pop_back();
-    if (!IsIdentifier(result.satellite_id)) {
+    if (!IsSatelliteId(result.satellite_id)) {
         throw ConfigError("config field 'satelliteId' must match "
-                          "[a-z0-9][a-z0-9_-]{0,63}");
+                          "[a-z][a-z0-9-]{0,63}");
     }
     result.credential = ReadProtectedFile(
         credential_path, kMaxCredentialBytes, "credential file");
