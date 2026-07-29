@@ -20,6 +20,7 @@ REMOTE_DIR = "/data/cortana"
 REMOTE_CONFIG = f"{REMOTE_DIR}/config.json"
 REMOTE_CREDENTIAL = f"{REMOTE_DIR}/credential"
 DEFAULT_ENDPOINT_BINARY = "/usr/bin/linux-voice-assistant-cpp"
+ENDPOINT_SERVICE = "/etc/init.d/S99ha-speaker"
 SATELLITE_ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 AREA_ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
@@ -143,6 +144,10 @@ def check_remote_config(target: AdbTarget, endpoint_binary: str) -> None:
     run_adb_shell(target, f"{shlex.quote(endpoint_binary)} --check-config")
 
 
+def restart_endpoint(target: AdbTarget) -> None:
+    run_adb_shell(target, f"{ENDPOINT_SERVICE} voice-assistant restart")
+
+
 def provision(args: argparse.Namespace) -> int:
     endpoint = validate_endpoint(args.endpoint)
     satellite_id = validate_satellite_id(args.satellite_id)
@@ -180,6 +185,7 @@ def provision(args: argparse.Namespace) -> int:
         cleanup_remote(target, temporary_paths)
 
     check_remote_config(target, args.endpoint_binary)
+    restart_endpoint(target)
     print(f"Provisioned Cortana endpoint {satellite_id}")
     return 0
 
@@ -202,6 +208,7 @@ def rotate_credential(args: argparse.Namespace) -> int:
         cleanup_remote(target, (credential_temp,))
 
     check_remote_config(target, args.endpoint_binary)
+    restart_endpoint(target)
     print("Rotated Cortana endpoint credential")
     return 0
 

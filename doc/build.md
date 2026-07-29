@@ -338,9 +338,9 @@ It should:
 
 T1.2 implements the host tool as `script/provision_cortana_endpoint.py`. The
 device-side `linux-voice-assistant-cpp` binary exposes `--check-config` and
-`--status`. The normal legacy HA startup path does not load the Cortana
-configuration yet; that becomes mandatory when the Cortana control plane
-replaces it.
+`--status`. As of T2.4, normal startup requires this configuration and the
+provisioning tool restarts the endpoint after a validated install or credential
+rotation.
 
 USB ADB or authenticated SSH is sufficient for initial provisioning. Do not
 build a web or BLE commissioning interface for the first endpoint.
@@ -828,6 +828,16 @@ to the first planned firmware build and device-test phase.
 
 Gate: the endpoint authenticates and remains connected to the fake server with
 no ESPHome listener, protobuf, HA state machine, or Home Assistant discovery.
+
+Implementation note: `main.cpp` now loads the protected Cortana configuration,
+starts `SessionClient`, drains its bounded event queue, maps session state to
+the shared LED controller, and polls only the local mute and home-button
+controls. The ESPHome protocol/protobuf tree, entities, HA satellite,
+`ServerState`, mDNS publisher, timezone bridge, updater wrappers, supervisor
+HTTP API, host/target protobuf dependencies, and Avahi selection were deleted.
+The historical Buildroot package, executable, init script, and service command
+names remain temporarily stable. USB provisioning restarts that service after
+validated configuration or credential changes.
 
 ### Phase 3: continuous microphone ingress and wake purge — overall High
 

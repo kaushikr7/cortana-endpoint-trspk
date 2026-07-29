@@ -1,6 +1,6 @@
 // WakeWordScanner: reads available wake-word metadata from .json
 // files without loading TFLite models. Isolated TU so nlohmann/json
-// doesn't collide with api.pb.h's `log` extension.
+// does not collide with common `log` symbols.
 
 #pragma once
 

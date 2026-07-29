@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# S99ha-speaker: unified init script and service monitor for HA speaker.
+# S99ha-speaker: legacy-named service monitor for the Cortana endpoint.
 #
 # Manages:
 #   - netmonitor       (WiFi/internet connectivity state machine)
@@ -62,11 +62,7 @@ stop_netmonitor() {
 start_voice_assistant() {
     is_running "$VOICE_PIDFILE" && return 0
     rm -f "$VOICE_PIDFILE" "$DISABLE_VOICE"
-    local spk_name
-    spk_name=$(jq -r '.device.name // "thirdreality-speaker"' "$DEVICE_CONF")
-    /usr/bin/linux-voice-assistant-cpp \
-        --name "$spk_name" \
-        --port 6053 &
+    /usr/bin/linux-voice-assistant-cpp &
     echo $! > "$VOICE_PIDFILE"
 }
 

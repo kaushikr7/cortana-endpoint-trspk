@@ -39,7 +39,7 @@
 // Build
 // -----
 //   This TU is wired into CMakeLists.txt as the `aec_loopback_test`
-//   executable. It links libasound and the imported PROTOBUF/WEBRTC_APM
+//   executable. It links libasound and the imported WEBRTC_APM
 //   pkg-config targets that the main binary already uses.
 //
 // Usage examples

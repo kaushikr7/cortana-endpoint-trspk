@@ -87,6 +87,17 @@ class AdbCommandTests(unittest.TestCase):
         self.assertNotIn(credential.decode(), " ".join(command))
         self.assertEqual(run.call_args.kwargs["input"], credential)
 
+    @mock.patch.object(provision, "run_adb_shell")
+    def test_endpoint_restart_uses_legacy_service_name(
+        self, run_shell: mock.Mock
+    ) -> None:
+        target = provision.AdbTarget(serial="device-1")
+        provision.restart_endpoint(target)
+        run_shell.assert_called_once_with(
+            target,
+            "/etc/init.d/S99ha-speaker voice-assistant restart",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

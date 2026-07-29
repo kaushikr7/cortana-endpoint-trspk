@@ -10,66 +10,10 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_compile_options(-Wall -Wextra -Wpedantic)
 
 # ---------------------------------------------------------------------------
-# Generate api.pb.{h,cc} from vendored .proto files
-#
-# Buildroot puts host-protobuf's protoc on PATH and provides target
-# libprotobuf via pkg-config. We avoid CMake's FindProtobuf because in
-# Buildroot cross-compile it tends to mix host/target. Instead:
-#  - locate protoc by name (host PATH, set by Buildroot)
-#  - locate libprotobuf via pkg-config (target sysroot, set by toolchain file)
-# ---------------------------------------------------------------------------
-
-find_program(PROTOC_EXECUTABLE protoc REQUIRED)
-message(STATUS "Found protoc: ${PROTOC_EXECUTABLE}")
-
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(PROTOBUF REQUIRED IMPORTED_TARGET protobuf)
-message(STATUS "Found protobuf ${PROTOBUF_VERSION} via pkg-config")
-
-set(PROTO_SRC_DIR  "${CMAKE_SOURCE_DIR}/proto")
-set(PROTO_GEN_DIR  "${CMAKE_BINARY_DIR}/generated/proto")
-file(MAKE_DIRECTORY "${PROTO_GEN_DIR}")
-
-set(PROTO_FILES
-    "${PROTO_SRC_DIR}/api_options.proto"
-    "${PROTO_SRC_DIR}/api.proto"
-)
-
-set(PROTO_GEN_SRCS
-    "${PROTO_GEN_DIR}/api_options.pb.cc"
-    "${PROTO_GEN_DIR}/api.pb.cc"
-)
-set(PROTO_GEN_HDRS
-    "${PROTO_GEN_DIR}/api_options.pb.h"
-    "${PROTO_GEN_DIR}/api.pb.h"
-)
-
-# Single custom command that emits both .pb.cc/.pb.h pairs in one
-# protoc invocation (protoc handles multiple inputs in one call,
-# resolving the api_options import correctly).
-add_custom_command(
-    OUTPUT  ${PROTO_GEN_SRCS} ${PROTO_GEN_HDRS}
-    COMMAND ${PROTOC_EXECUTABLE}
-            --proto_path=${PROTO_SRC_DIR}
-            --cpp_out=${PROTO_GEN_DIR}
-            ${PROTO_FILES}
-    DEPENDS ${PROTO_FILES}
-    COMMENT "Generating ESPHome API protobuf C++ sources"
-    VERBATIM
-)
-
-add_library(lva_proto OBJECT ${PROTO_GEN_SRCS})
-target_include_directories(lva_proto PUBLIC ${PROTO_GEN_DIR})
-target_link_libraries(lva_proto PUBLIC PkgConfig::PROTOBUF)
-target_compile_options(lva_proto PRIVATE
-    -Wno-pedantic
-    -Wno-unused-parameter
-    -Wno-deprecated-declarations
-)
-
-# ---------------------------------------------------------------------------
 # Main binary
 # ---------------------------------------------------------------------------
+
+find_package(PkgConfig REQUIRED)
 
 # nlohmann_json: header-only JSON parser. Installed by the
 # json-for-modern-cpp Buildroot package (staging only — no runtime
@@ -94,14 +38,9 @@ message(STATUS "Found libpulse-simple ${PULSE_SIMPLE_VERSION} via pkg-config")
 pkg_check_modules(WEBRTC_APM REQUIRED IMPORTED_TARGET webrtc-audio-processing-1)
 message(STATUS "Found webrtc-audio-processing ${WEBRTC_APM_VERSION} via pkg-config")
 
-# libcurl: OTA download + check-version HTTP POST (phase 7).
+# libcurl: HTTPS device tickets and WSS session transport.
 pkg_check_modules(LIBCURL REQUIRED IMPORTED_TARGET libcurl)
 message(STATUS "Found libcurl ${LIBCURL_VERSION} via pkg-config")
-
-# avahi-client: mDNS service registration (_esphomelib._tcp) for
-# HA auto-discovery. avahi-daemon is already in defconfig.
-pkg_check_modules(AVAHI_CLIENT REQUIRED IMPORTED_TARGET avahi-client)
-message(STATUS "Found avahi-client ${AVAHI_CLIENT_VERSION} via pkg-config")
 
 # alsa-lib: required by the aec_loopback_test dev tool, which opens
 # the hardware loopback capture device (e.g. plughw:0,4) directly.
@@ -163,13 +102,7 @@ add_executable(linux-voice-assistant-cpp
     src/cortana/DeviceTicketClient.cpp
     src/cortana/Protocol.cpp
     src/cortana/SessionClient.cpp
-    src/protocol/Frame.cpp
-    src/protocol/MessageRegistry.cpp
-    src/protocol/Connection.cpp
-    src/protocol/ApiServer.cpp
-    src/protocol/MdnsPublisher.cpp
     src/state/Preferences.cpp
-    src/state/ServerState.cpp
     src/audio/LibMpvPlayer.cpp
     src/audio/PcmRingBuffer.cpp
     src/audio/AudioCapture.cpp
@@ -182,25 +115,11 @@ add_executable(linux-voice-assistant-cpp
     src/audio/WakeWordEngine.cpp
     src/audio/WakeWordScanner.cpp
     src/audio/WebRtcProcessor.cpp
-    src/satellite/Satellite.cpp
     src/tr/HomeButton.cpp
     src/tr/LedController.cpp
     src/tr/MicMuteGpio.cpp
-    src/tr/OtaClient.cpp
-    src/tr/SoundConfWatcher.cpp
-    src/tr/Supervisor.cpp
-    src/tr/SupervisorHttpServer.cpp
     src/tr/SysInfo.cpp
     src/tr/SystemVolume.cpp
-    src/tr/TimeZoneSync.cpp
-    src/entities/MuteSwitchEntity.cpp
-    src/entities/ThinkingSoundEntity.cpp
-    src/entities/NumberEntity.cpp
-    src/entities/SelectEntity.cpp
-    src/entities/MediaPlayerEntity.cpp
-    src/entities/EventEntity.cpp
-    src/entities/UpdateEntity.cpp
-    src/entities/UpdateEntity_Ota.cpp
     src/util/Log.cpp
 )
 
@@ -209,22 +128,12 @@ target_include_directories(linux-voice-assistant-cpp
         ${CMAKE_SOURCE_DIR}/src
 )
 
-# The generated proto headers (api.pb.h) use deprecated enum values
-# at file scope — the warning fires in any TU that includes them, not
-# just where we call deprecated APIs. Suppress globally on the
-# executable; we keep the localized push/pop in Connection.cpp for
-# documentation of the one deprecated field we deliberately set.
-target_compile_options(linux-voice-assistant-cpp PRIVATE
-    -Wno-deprecated-declarations
-)
-
 # Threading is needed for the SIGTERM wait helper, Cortana's single-owner
 # network worker, and the audio capture thread.
 find_package(Threads REQUIRED)
 
 target_link_libraries(linux-voice-assistant-cpp
     PRIVATE
-        lva_proto
         lva_microfrontend
         nlohmann_json::nlohmann_json
         PkgConfig::MPV
@@ -232,7 +141,6 @@ target_link_libraries(linux-voice-assistant-cpp
         PkgConfig::ALSA
         PkgConfig::WEBRTC_APM
         PkgConfig::LIBCURL
-        PkgConfig::AVAHI_CLIENT
         Threads::Threads
         ${CMAKE_DL_LIBS}   # for dlopen/dlsym in TfliteRuntime
 )

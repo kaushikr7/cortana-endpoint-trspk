@@ -1,109 +1,66 @@
-
 #include <getopt.h>
-#include <sys/timerfd.h>
+#include <poll.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include <algorithm>
-#include <array>
 #include <atomic>
 #include <chrono>
-#include <cctype>
 #include <cerrno>
-#include <condition_variable>
 #include <csignal>
-#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
-#include <fstream>
 #include <memory>
-#include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
-#include <vector>
 
 #include <nlohmann/json.hpp>
 
-#include "audio/AudioCapture.h"
-#include "audio/LibMpvPlayer.h"
-#include "audio/MicroWakeWord.h"
-#include "audio/OpenWakeWord.h"
-#include "audio/OpenWakeWordFeatures.h"
-#include "audio/PcmRingBuffer.h"
-#include "audio/WakeWordEngine.h"
-#include "audio/WebRtcProcessor.h"
 #include "config/EndpointConfig.h"
-#include "entities/EventEntity.h"
-#include "entities/MediaPlayerEntity.h"
-#include "entities/MuteSwitchEntity.h"
-#include "entities/NumberEntity.h"
-#include "entities/SelectEntity.h"
-#include "entities/ThinkingSoundEntity.h"
-#include "entities/UpdateEntity.h"
-#include "protocol/ApiServer.h"
-#include "protocol/MdnsPublisher.h"
-#include "protocol/MessageRegistry.h"
-#include "satellite/Satellite.h"
-#include "state/Preferences.h"
-#include "state/ServerState.h"
+#include "cortana/CurlSessionTransport.h"
+#include "cortana/Protocol.h"
+#include "cortana/SessionClient.h"
 #include "tr/HomeButton.h"
 #include "tr/LedController.h"
 #include "tr/MicMuteGpio.h"
-#include "tr/SoundConfWatcher.h"
-#include "tr/Supervisor.h"
-#include "tr/SupervisorHttpServer.h"
-#include "tr/SysInfo.h"
-#include "tr/SystemVolume.h"
+#include "tr/PhysicalControlPolicy.h"
 #include "util/Log.h"
 
-#include "api.pb.h"
-
 namespace {
+
+using namespace std::chrono_literals;
 
 constexpr const char* kTag = "main";
 constexpr const char* kVersion = "0.0.1";
 
-constexpr double kDefaultMicroWakeSensitivity = 0.85;
-constexpr double kDefaultOpenWakeSensitivity  = 0.5;
-constexpr double kDefaultStopSensitivity      = 0.5;
-
 std::atomic<int> g_shutdown_signal{0};
-lva::proto::ApiServer* g_server = nullptr;
-lva::audio::WakeWordEngine* g_wakeword_engine = nullptr;
 
 extern "C" void OnSignal(int signo) {
     g_shutdown_signal.store(signo, std::memory_order_relaxed);
-    if (g_wakeword_engine) {
-        g_wakeword_engine->RequestStop();
-    }
-    if (g_server) {
-        g_server->Stop();
-    }
 }
 
 extern "C" void OnSigchld(int /*signo*/) {
-    int saved_errno = errno;
+    const int saved_errno = errno;
     while (::waitpid(-1, nullptr, WNOHANG) > 0) {
     }
     errno = saved_errno;
 }
 
 void InstallSignalHandlers() {
-    struct sigaction sa{};
-    sa.sa_handler = &OnSignal;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;
-    ::sigaction(SIGTERM, &sa, nullptr);
-    ::sigaction(SIGINT, &sa, nullptr);
+    struct sigaction action {};
+    action.sa_handler = &OnSignal;
+    ::sigemptyset(&action.sa_mask);
+    ::sigaction(SIGTERM, &action, nullptr);
+    ::sigaction(SIGINT, &action, nullptr);
     std::signal(SIGPIPE, SIG_IGN);
 
-    struct sigaction sc{};
-    sc.sa_handler = &OnSigchld;
-    sigemptyset(&sc.sa_mask);
-    sc.sa_flags = SA_RESTART | SA_NOCLDSTOP;
-    ::sigaction(SIGCHLD, &sc, nullptr);
+    struct sigaction child_action {};
+    child_action.sa_handler = &OnSigchld;
+    ::sigemptyset(&child_action.sa_mask);
+    child_action.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+    ::sigaction(SIGCHLD, &child_action, nullptr);
 }
 
 void PrintUsage(const char* argv0) {
@@ -111,154 +68,76 @@ void PrintUsage(const char* argv0) {
         "Usage: %s [options]\n"
         "\n"
         "Options:\n"
-        "  --name <name>            Device name advertised to HA\n"
-        "  --port <port>            TCP port to listen on (default: 6053)\n"
-        "  --host <addr>            Bind address (default: 0.0.0.0)\n"
-        "  --preferences-file <p>   JSON file for persisted prefs\n"
-        "                           (default: /data/conf/sound.json)\n"
-        "  --wakeword-dir <dir>     Wake-word model directory\n"
-        "  --wakeword-models <ids>  Comma-separated model IDs (default: okay_nabu)\n"
-        "  --audio-device <dev>     PulseAudio device name\n"
-        "  --capture-backend <b>    Capture backend: alsa|pulse (default: alsa)\n"
-        "                           alsa enables hardware-loopback AEC.\n"
-        "  --capture-alsa-device    ALSA capture device for the alsa backend\n"
-        "                           (default: hw:0,4)\n"
-        "  --capture-mic-channel    0-based mic channel within the alsa\n"
-        "                           stream (default: 0)\n"
-        "  --capture-ref-channels   Comma-separated 0-based ref channels;\n"
-        "                           empty/none disables AEC. (default: 2,3)\n"
-        "  --continue-conversation-delay <s>\n"
-        "                           Seconds to wait after TTS finishes before\n"
-        "                           opening the mic for a continued\n"
-        "                           conversation (default: 0.5)\n"
         "  --check-config          Validate Cortana config and credential\n"
         "  --status                Print redacted Cortana config status as JSON\n"
         "  --config-file <p>       Cortana config file\n"
         "                           (default: /data/cortana/config.json)\n"
         "  --credential-file <p>   Cortana credential file\n"
         "                           (default: /data/cortana/credential)\n"
-        "  --debug                  Enable debug logging\n"
-        "  --help                   Show this help and exit\n",
+        "  --debug                 Enable debug logging\n"
+        "  --help                  Show this help and exit\n",
         argv0);
 }
 
 struct CliOptions {
-    enum class ConfigCommand { kNone, kCheck, kStatus };
+    enum class ConfigCommand { None, Check, Status };
 
-    std::string device_name = "3RSPK";
-    std::string host = "0.0.0.0";
-    std::string audio_device;
-    std::uint16_t port = 6053;
-    std::filesystem::path preferences_file = "/data/conf/sound.json";
-    std::string wakeword_type = "micro";  // "micro" or "open"
-    std::string wakeword_models = "okay_nabu";
-
-    std::string capture_backend     = "alsa";
-    std::string capture_alsa_device = "hw:0,4";
-    int         capture_mic_channel = 0;
-    std::string capture_ref_channels = "2,3";
-
-    double      continue_conversation_delay = 0.5;  // seconds
-
-    ConfigCommand config_command = ConfigCommand::kNone;
+    ConfigCommand config_command = ConfigCommand::None;
     std::filesystem::path config_file = lva::config::kDefaultConfigPath;
     std::filesystem::path credential_file =
         lva::config::kDefaultCredentialPath;
-
     bool debug = false;
 };
 
-bool ParseCli(int argc, char** argv, CliOptions& out) {
+bool ParseCli(int argc, char** argv, CliOptions& output) {
     constexpr int kOptCheckConfig = 1000;
     constexpr int kOptStatus = 1001;
     constexpr int kOptConfigFile = 1002;
     constexpr int kOptCredentialFile = 1003;
-    static const struct option long_options[] = {
-        {"name",                  required_argument, nullptr, 'n'},
-        {"port",                  required_argument, nullptr, 'p'},
-        {"host",                  required_argument, nullptr, 'H'},
-        {"preferences-file",      required_argument, nullptr, 'f'},
-        {"audio-device",          required_argument, nullptr, 'a'},
-        {"wakeword-type",         required_argument, nullptr, 'w'},
-        {"wakeword-models",       required_argument, nullptr, 'm'},
-        {"capture-backend",       required_argument, nullptr, 'B'},
-        {"capture-alsa-device",   required_argument, nullptr, 'A'},
-        {"capture-mic-channel",   required_argument, nullptr, 'M'},
-        {"capture-ref-channels",  required_argument, nullptr, 'R'},
-        {"continue-conversation-delay", required_argument, nullptr, 'C'},
-        {"check-config",          no_argument,       nullptr, kOptCheckConfig},
-        {"status",                no_argument,       nullptr, kOptStatus},
-        {"config-file",           required_argument, nullptr, kOptConfigFile},
-        {"credential-file",       required_argument, nullptr, kOptCredentialFile},
-        {"debug",                 no_argument,       nullptr, 'd'},
-        {"help",                  no_argument,       nullptr, 'h'},
-        {nullptr,                 0,                 nullptr, 0  },
+    static const option kOptions[] = {
+        {"check-config", no_argument, nullptr, kOptCheckConfig},
+        {"status", no_argument, nullptr, kOptStatus},
+        {"config-file", required_argument, nullptr, kOptConfigFile},
+        {"credential-file", required_argument, nullptr, kOptCredentialFile},
+        {"debug", no_argument, nullptr, 'd'},
+        {"help", no_argument, nullptr, 'h'},
+        {nullptr, 0, nullptr, 0},
     };
 
-    int c;
-    while ((c = ::getopt_long(argc, argv, "", long_options, nullptr)) != -1) {
-        switch (c) {
-            case 'n': out.device_name = optarg; break;
-            case 'H': out.host = optarg; break;
-            case 'd': out.debug = true; break;
-            case 'f': out.preferences_file = optarg; break;
-            case 'a': out.audio_device = optarg; break;
-            case 'w': out.wakeword_type = optarg; break;
-            case 'm': out.wakeword_models = optarg; break;
-            case 'B': out.capture_backend = optarg; break;
-            case 'A': out.capture_alsa_device = optarg; break;
-            case 'M': out.capture_mic_channel = std::atoi(optarg); break;
-            case 'R': out.capture_ref_channels = optarg; break;
+    int option_value = 0;
+    while ((option_value =
+                ::getopt_long(argc, argv, "", kOptions, nullptr)) != -1) {
+        switch (option_value) {
             case kOptCheckConfig:
-                if (out.config_command != CliOptions::ConfigCommand::kNone) {
-                    std::fprintf(stderr,
-                                 "Choose only one of --check-config or --status\n");
+                if (output.config_command != CliOptions::ConfigCommand::None) {
+                    std::fprintf(
+                        stderr, "Choose only one of --check-config or --status\n");
                     return false;
                 }
-                out.config_command = CliOptions::ConfigCommand::kCheck;
+                output.config_command = CliOptions::ConfigCommand::Check;
                 break;
             case kOptStatus:
-                if (out.config_command != CliOptions::ConfigCommand::kNone) {
-                    std::fprintf(stderr,
-                                 "Choose only one of --check-config or --status\n");
+                if (output.config_command != CliOptions::ConfigCommand::None) {
+                    std::fprintf(
+                        stderr, "Choose only one of --check-config or --status\n");
                     return false;
                 }
-                out.config_command = CliOptions::ConfigCommand::kStatus;
+                output.config_command = CliOptions::ConfigCommand::Status;
                 break;
-            case kOptConfigFile: out.config_file = optarg; break;
-            case kOptCredentialFile: out.credential_file = optarg; break;
-            case 'C': {
-                char* end = nullptr;
-                const double v = std::strtod(optarg, &end);
-                if (end == optarg || v < 0.0) {
-                    std::fprintf(stderr,
-                                 "Invalid --continue-conversation-delay: %s\n",
-                                 optarg);
-                    return false;
-                }
-                out.continue_conversation_delay = v;
-                break;
-            }
-            case 'p': {
-                const long v = std::strtol(optarg, nullptr, 10);
-                if (v <= 0 || v > 65535) {
-                    std::fprintf(stderr, "Invalid --port: %s\n", optarg);
-                    return false;
-                }
-                out.port = static_cast<std::uint16_t>(v);
-                break;
-            }
+            case kOptConfigFile: output.config_file = optarg; break;
+            case kOptCredentialFile: output.credential_file = optarg; break;
+            case 'd': output.debug = true; break;
             case 'h':
                 PrintUsage(argv[0]);
                 std::exit(0);
-            case '?':
             default:
                 PrintUsage(argv[0]);
                 return false;
         }
     }
     if (optind != argc) {
-        std::fprintf(stderr, "Unexpected positional argument: %s\n", argv[optind]);
+        std::fprintf(stderr, "Unexpected positional argument: %s\n",
+                     argv[optind]);
         return false;
     }
     return true;
@@ -268,7 +147,7 @@ int RunConfigCommand(const CliOptions& cli) {
     try {
         const auto config = lva::config::EndpointConfig::Load(
             cli.config_file, cli.credential_file);
-        if (cli.config_command == CliOptions::ConfigCommand::kStatus) {
+        if (cli.config_command == CliOptions::ConfigCommand::Status) {
             std::printf("%s\n", config.RedactedStatusJson().c_str());
         } else {
             std::printf("Cortana endpoint configuration is valid "
@@ -282,8 +161,8 @@ int RunConfigCommand(const CliOptions& cli) {
         }
         return 0;
     } catch (const lva::config::ConfigError& error) {
-        if (cli.config_command == CliOptions::ConfigCommand::kStatus) {
-            nlohmann::json status = {
+        if (cli.config_command == CliOptions::ConfigCommand::Status) {
+            const nlohmann::json status = {
                 {"configured", false},
                 {"error", error.what()},
             };
@@ -296,618 +175,209 @@ int RunConfigCommand(const CliOptions& cli) {
     }
 }
 
-std::string ReadMacFromDeviceJson(const std::filesystem::path& path) {
-    if (!std::filesystem::exists(path)) return {};
-    std::ifstream f(path);
-    if (!f) return {};
-    nlohmann::json j;
-    try {
-        f >> j;
-    } catch (...) {
-        return {};
+lva::tr::EndpointActivity EndpointActivityFor(
+    const lva::cortana::SessionSnapshot& snapshot) {
+    if (snapshot.phase != lva::cortana::SessionPhase::Ready) {
+        return lva::tr::EndpointActivity::Unavailable;
     }
-    if (!j.is_object()) return {};
-    if (auto it = j.find("device"); it != j.end() && it->is_object()) {
-        if (auto mit = it->find("macAddress");
-            mit != it->end() && mit->is_string()) {
-            return mit->get<std::string>();
-        }
+    switch (snapshot.activity) {
+        case lva::cortana::Activity::Armed:
+        case lva::cortana::Activity::Idle:
+            return lva::tr::EndpointActivity::Armed;
+        case lva::cortana::Activity::Speaking:
+            return lva::tr::EndpointActivity::Playback;
+        default:
+            return lva::tr::EndpointActivity::ActiveTurn;
     }
-    return {};
+}
+
+void ApplyLedState(const lva::cortana::SessionSnapshot& snapshot,
+                   lva::tr::LedController& leds) {
+    using lva::cortana::Activity;
+    using lva::cortana::SessionPhase;
+    using lva::tr::LedState;
+
+    leds.SetBlocked(snapshot.phase == SessionPhase::Blocked);
+    if (snapshot.phase == SessionPhase::Connecting ||
+        snapshot.phase == SessionPhase::Negotiating) {
+        leds.SetConnection(snapshot.generation <= 1
+                               ? LedState::Booting
+                               : LedState::Reconnecting);
+        leds.ClearTurn();
+        return;
+    }
+    if (snapshot.phase == SessionPhase::Backoff) {
+        leds.SetConnection(LedState::Reconnecting);
+        leds.ClearTurn();
+        return;
+    }
+    if (snapshot.phase != SessionPhase::Ready) {
+        leds.ClearConnection();
+        leds.ClearTurn();
+        return;
+    }
+
+    leds.ClearConnection();
+    switch (snapshot.activity) {
+        case Activity::WakePending:
+        case Activity::Hearing:
+        case Activity::FollowUp:
+            leds.SetTurn(LedState::Listening);
+            break;
+        case Activity::Transcribing:
+        case Activity::Thinking:
+            leds.SetTurn(LedState::Thinking);
+            break;
+        case Activity::Speaking:
+        case Activity::Interrupting:
+            leds.SetTurn(LedState::Speaking);
+            break;
+        case Activity::Armed:
+        case Activity::Idle:
+            leds.ClearTurn();
+            break;
+    }
+}
+
+void WaitForShutdown() {
+    while (g_shutdown_signal.load(std::memory_order_relaxed) == 0) {
+        std::this_thread::sleep_for(100ms);
+    }
+}
+
+std::string NewManualActivationId(std::uint64_t sequence) {
+    const auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    return "manual-" + std::to_string(milliseconds) + "-" +
+        std::to_string(sequence);
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
     CliOptions cli;
-    if (!ParseCli(argc, argv, cli)) {
-        return 2;
-    }
-
-    if (cli.config_command != CliOptions::ConfigCommand::kNone) {
+    if (!ParseCli(argc, argv, cli)) return 2;
+    if (cli.config_command != CliOptions::ConfigCommand::None) {
         return RunConfigCommand(cli);
     }
 
     lva::log::SetLevel(cli.debug ? lva::log::Level::kDebug
                                  : lva::log::Level::kInfo);
-
-    LVA_LOGI(kTag,
-             "linux-voice-assistant-cpp %s starting "
-             "(name=%s host=%s port=%u prefs=%s)",
-             kVersion, cli.device_name.c_str(), cli.host.c_str(),
-             static_cast<unsigned>(cli.port),
-             cli.preferences_file.c_str());
-
-    auto led_controller = std::make_unique<lva::tr::LedController>();
-    led_controller->SetBase(lva::tr::LedState::Ready);
-
-    // Build shared ServerState. Owned by main; ApiServer holds a ref.
-    lva::state::ServerState state;
-    state.on_volume_changed = [leds = led_controller.get()] {
-        leds->ShowVolumeChanged();
-    };
-    state.name             = cli.device_name;
-    state.friendly_name    = cli.device_name;
-    {
-        const lva::tr::DeviceInfo dev = lva::tr::ReadDeviceInfo();
-        if (!dev.firmware_version.empty()) {
-            state.version = dev.firmware_version;
-        } else {
-            LVA_LOGW(kTag, "device.firmwareVersion missing; "
-                           "falling back to package version %s",
-                     kVersion);
-            state.version = kVersion;
-        }
-        if (!dev.mac_address.empty()) {
-            state.mac_address = dev.mac_address;
-        }
-    }
-    state.esphome_version  = "2025.9.0";
-    if (state.mac_address.empty()) {
-        state.mac_address = ReadMacFromDeviceJson("/data/conf/device.json");
-    }
-    std::transform(state.mac_address.begin(), state.mac_address.end(),
-                   state.mac_address.begin(),
-                   [](unsigned char c) { return std::tolower(c); });
-    state.preferences_path = cli.preferences_file;
-    const bool use_openwakeword = (cli.wakeword_type == "open");
-    const std::filesystem::path wakeword_dir = use_openwakeword
-        ? "/usr/share/thirdreality/wakewords/openwakeword"
-        : "/usr/share/thirdreality/wakewords/microwakeword";
-    state.wakeword_dir = wakeword_dir;
-    state.preferences      = lva::state::Preferences::LoadFromFile(
-        cli.preferences_file);
-
-    if (state.preferences.volume.has_value()) {
-        state.volume.store(*state.preferences.volume,
-                           std::memory_order_relaxed);
-        lva::tr::SetSystemVolumeSilent(
-            static_cast<int>(*state.preferences.volume * 100.0 + 0.5));
-    }
-    state.muted.store(state.preferences.is_mic_muted(),
-                      std::memory_order_relaxed);
-    state.mic_volume_live.store(state.preferences.mic_volume,
-                                std::memory_order_relaxed);
-    state.continue_conversation_delay_ns =
-        static_cast<std::int64_t>(cli.continue_conversation_delay * 1e9);
-
-    auto mic_mute_gpio = std::make_unique<lva::tr::MicMuteGpio>(
-        [&state](bool muted, lva::tr::MuteChangeSource source) {
-            state.PersistMuted(muted);
-            if (source == lva::tr::MuteChangeSource::Hardware) {
-                state.PlayMuteToggleSound(muted);
-            }
-        });
-    state.sync_mute_hardware = [gpio = mic_mute_gpio.get()](bool muted) {
-        gpio->SyncToHardware(muted);
-    };
-    if (mic_mute_gpio->Available()) {
-        mic_mute_gpio->ReadAndApplyOnce();
-    }
-
-    lva::audio::LibMpvPlayer::Options mpv_opts;
-    mpv_opts.audio_device = cli.audio_device;
-    mpv_opts.cache_secs   = 10;
-    mpv_opts.short_sound_safe = false;
-    auto music_player = std::make_unique<lva::audio::LibMpvPlayer>(mpv_opts);
-
-    lva::audio::LibMpvPlayer::Options tts_opts;
-    tts_opts.audio_device     = cli.audio_device;
-    tts_opts.cache_secs       = 1;     // smaller for low TTS latency
-    tts_opts.short_sound_safe = true;
-    auto announce_player = std::make_unique<lva::audio::LibMpvPlayer>(tts_opts);
-
-    auto pcm_ring = std::make_unique<lva::audio::PcmRingBuffer>(
-        16'000 * 2);
-    auto satellite_ring = std::make_unique<lva::audio::PcmRingBuffer>(
-        16'000 * 2);
-
-    // Parse capture backend + ref channels.
-    lva::audio::AudioCapture::Options cap_opts;
-    const bool use_alsa_backend = (cli.capture_backend == "alsa");
-    if (use_alsa_backend) {
-        cap_opts.backend            = lva::audio::AudioCapture::Backend::kAlsa;
-        cap_opts.alsa_device        = cli.capture_alsa_device;
-        cap_opts.alsa_channels      = 4;
-        cap_opts.mic_channel        =
-            static_cast<unsigned>(std::max(0, cli.capture_mic_channel));
-        cap_opts.frames_per_read    = 160;   // 10 ms; matches WebRTC frame
-        // Parse "a,b" / "a" / "" / "none" into ref_channels[2].
-        std::array<int, 2> refs = {-1, -1};
-        if (!cli.capture_ref_channels.empty() &&
-            cli.capture_ref_channels != "none") {
-            std::size_t comma = cli.capture_ref_channels.find(',');
-            try {
-                refs[0] = std::stoi(cli.capture_ref_channels.substr(0, comma));
-                if (comma != std::string::npos) {
-                    refs[1] = std::stoi(cli.capture_ref_channels.substr(comma + 1));
-                }
-            } catch (...) {
-                LVA_LOGW(kTag,
-                         "could not parse --capture-ref-channels '%s'; "
-                         "AEC disabled",
-                         cli.capture_ref_channels.c_str());
-                refs = {-1, -1};
-            }
-        }
-        cap_opts.ref_channels = refs;
-    } else if (cli.capture_backend == "pulse") {
-        cap_opts.backend            = lva::audio::AudioCapture::Backend::kPulse;
-        cap_opts.frames_per_read    = 1600;   // 100 ms (legacy default)
-        cap_opts.buffer_latency_us  = 100'000;
-    } else {
-        LVA_LOGE(kTag, "unknown --capture-backend '%s'; expected alsa|pulse",
-                 cli.capture_backend.c_str());
-        return 2;
-    }
-
-    auto audio_capture = std::make_unique<lva::audio::AudioCapture>(
-        cap_opts, *pcm_ring);
-    audio_capture->AddTap(*satellite_ring);
-
-    bool applied_default = false;
-    if (state.preferences.mic_auto_gain == 0) {
-        state.preferences.mic_auto_gain = 10;
-        applied_default = true;
-    }
-    if (state.preferences.mic_noise_suppression == 0) {
-        state.preferences.mic_noise_suppression = 2;  // Medium NS
-        applied_default = true;
-    }
-    if (applied_default) {
-        LVA_LOGI(kTag,
-                 "applied first-boot mic defaults: agc=%d, ns=%d",
-                 state.preferences.mic_auto_gain,
-                 state.preferences.mic_noise_suppression);
-    }
-
-    const bool aec_enabled = use_alsa_backend &&
-                             (cap_opts.ref_channels[0] >= 0);
-    LVA_LOGI(kTag, "capture backend=%s aec=%s",
-             use_alsa_backend ? "alsa" : "pulse",
-             aec_enabled ? "enabled" : "disabled");
-
-    auto webrtc_processor = std::make_unique<lva::audio::WebRtcProcessor>(
-        state.preferences.mic_auto_gain,
-        state.preferences.mic_noise_suppression,
-        aec_enabled);
-    audio_capture->SetProcessor(webrtc_processor.get());
-    audio_capture->SetMicVolumeSource(&state.mic_volume_live);
-    state.audio_capture = audio_capture.get();
-    state.webrtc_processor = webrtc_processor.get();
-    state.announce_player  = announce_player.get();
-    state.music_player     = music_player.get();
-
-    // Set initial volume on announce player to match music player.
-    if (state.preferences.volume.has_value()) {
-        announce_player->SetVolume(*state.preferences.volume);
-    }
-
-    std::uint32_t next_key = 0;
-
-    {
-        auto media = std::make_unique<lva::entities::MediaPlayerEntity>(
-            next_key++, state, music_player.get());
-        state.media_player_entity = media.get();
-        state.entities.push_back(std::move(media));
-    }
-
-    {
-        auto mute = std::make_unique<lva::entities::MuteSwitchEntity>(
-            next_key++, state);
-        state.mute_switch_entity = mute.get();
-        state.entities.push_back(std::move(mute));
-    }
-    state.entities.push_back(std::make_unique<lva::entities::ThinkingSoundEntity>(
-        next_key++, state));
-
-
-    state.entities.push_back(std::make_unique<lva::entities::NumberEntity>(
-        next_key++,
-        lva::entities::NumberEntity::Config{
-            .object_id     = "wake_word_1_sensitivity",
-            .display_name  = "Wake Word 1 Sensitivity",
-            .icon          = "",
-            .min_value     = 0.0,
-            .max_value     = 1.0,
-            .step          = 0.001,
-            .mode_enum     = 1,  // BOX
-            .getter        = [&state, use_openwakeword] {
-                const double fallback = use_openwakeword
-                    ? kDefaultOpenWakeSensitivity
-                    : kDefaultMicroWakeSensitivity;
-                return state.preferences.wake_word_1_sensitivity.value_or(
-                    fallback);
-            },
-            .setter        = [&state](double v) {
-                state.PersistWakeWordSensitivity(1, v);
-            },
-        }));
-
-    state.entities.push_back(std::make_unique<lva::entities::NumberEntity>(
-        next_key++,
-        lva::entities::NumberEntity::Config{
-            .object_id     = "wake_word_2_sensitivity",
-            .display_name  = "Wake Word 2 Sensitivity",
-            .icon          = "",
-            .min_value     = 0.0,
-            .max_value     = 1.0,
-            .step          = 0.001,
-            .mode_enum     = 1,
-            .getter        = [&state, use_openwakeword] {
-                const double fallback = use_openwakeword
-                    ? kDefaultOpenWakeSensitivity
-                    : kDefaultMicroWakeSensitivity;
-                return state.preferences.wake_word_2_sensitivity.value_or(
-                    fallback);
-            },
-            .setter        = [&state](double v) {
-                state.PersistWakeWordSensitivity(2, v);
-            },
-        }));
-
-    state.entities.push_back(std::make_unique<lva::entities::NumberEntity>(
-        next_key++,
-        lva::entities::NumberEntity::Config{
-            .object_id     = "stop_word_sensitivity",
-            .display_name  = "Stop Word Sensitivity",
-            .icon          = "mdi:hand-back-left",
-            .min_value     = 0.0,
-            .max_value     = 1.0,
-            .step          = 0.001,
-            .mode_enum     = 1,
-            .getter        = [&state] {
-                return state.preferences.stop_word_sensitivity.value_or(
-                    kDefaultStopSensitivity);
-            },
-            .setter        = [&state](double v) {
-                state.PersistStopWordSensitivity(v);
-            },
-        }));
-
-    state.entities.push_back(std::make_unique<lva::entities::NumberEntity>(
-        next_key++,
-        lva::entities::NumberEntity::Config{
-            .object_id     = "mic_gain",
-            .display_name  = "Mic Auto Gain",
-            .icon          = "mdi:microphone-plus",
-            .min_value     = 0.0,
-            .max_value     = 31.0,
-            .step          = 1.0,
-            .mode_enum     = 0,  // AUTO
-            .getter        = [&state] {
-                return static_cast<double>(state.preferences.mic_auto_gain);
-            },
-            .setter        = [&state](double v) {
-                state.PersistMicAutoGain(static_cast<int>(v));
-            },
-        }));
-
-    // Mic noise suppression: 5-level select. Maps label ↔ int 0..4.
-    {
-        static const std::vector<std::string> kNoiseOptions = {
-            "Off", "Low", "Medium", "High", "Max",
-        };
-        state.entities.push_back(std::make_unique<lva::entities::SelectEntity>(
-            next_key++,
-            lva::entities::SelectEntity::Config{
-                .object_id     = "mic_noise",
-                .display_name  = "Mic Noise Suppression",
-                .icon          = "mdi:waveform",
-                .options       = kNoiseOptions,
-                .getter        = [&state]() -> std::string {
-                    const int idx = std::clamp(
-                        state.preferences.mic_noise_suppression, 0, 4);
-                    return kNoiseOptions[static_cast<std::size_t>(idx)];
-                },
-                .setter        = [&state](const std::string& label) {
-                    for (std::size_t i = 0; i < kNoiseOptions.size(); ++i) {
-                        if (kNoiseOptions[i] == label) {
-                            state.PersistMicNoiseSuppression(
-                                static_cast<int>(i));
-                            return;
-                        }
-                    }
-                    LVA_LOGW(kTag, "mic_noise: unknown label '%s'",
-                             label.c_str());
-                },
-            }));
-    }
-
-    state.entities.push_back(std::make_unique<lva::entities::NumberEntity>(
-        next_key++,
-        lva::entities::NumberEntity::Config{
-            .object_id     = "mic_volume",
-            .display_name  = "Mic Volume",
-            .icon          = "mdi:microphone-settings",
-            .min_value     = 1.0,
-            .max_value     = 100.0,
-            .step          = 1.0,
-            .mode_enum     = 0,  // AUTO
-            .getter        = [&state] {
-                return static_cast<double>(state.preferences.mic_volume);
-            },
-            .setter        = [&state](double v) {
-                state.PersistMicVolume(static_cast<int>(v));
-            },
-        }));
-
-    const std::uint32_t home_button_entity_key = next_key++;
-    state.entities.push_back(std::make_unique<lva::entities::EventEntity>(
-        home_button_entity_key,
-        lva::entities::EventEntity::Config{
-            .object_id    = "thirdreality_home_button",
-            .display_name = "Home Button",
-            .icon         = "mdi:gesture-tap-button",
-            .event_types  = {"single_press", "double_press", "triple_press"},
-        }));
-
-    lva::entities::UpdateEntity* update_entity_ptr = nullptr;
-    {
-        auto upd = std::make_unique<lva::entities::UpdateEntity>(
-            next_key++, state);
-        update_entity_ptr = upd.get();
-        state.entities.push_back(std::move(upd));
-    }
-
-    LVA_LOGI(kTag, "registered %zu entities", state.entities.size());
-
-    if (update_entity_ptr != nullptr) {
-        state.on_client_authenticated = [update_entity_ptr] {
-            update_entity_ptr->TriggerCheck();
-        };
-    }
-
-    lva::proto::ApiServer::Options opts;
-    opts.bind_address = cli.host;
-    opts.port         = cli.port;
-
-    lva::proto::ApiServer server(state, opts);
-    g_server = &server;
     InstallSignalHandlers();
 
-    if (!server.Start()) {
-        LVA_LOGE(kTag, "ApiServer::Start failed");
-        g_server = nullptr;
+    lva::tr::LedController leds;
+    leds.SetBase(lva::tr::LedState::Ready);
+    leds.SetConnection(lva::tr::LedState::Booting);
+
+    lva::config::EndpointConfig config;
+    try {
+        config = lva::config::EndpointConfig::Load(
+            cli.config_file, cli.credential_file);
+    } catch (const lva::config::ConfigError& error) {
+        LVA_LOGE(kTag, "Cortana endpoint configuration is blocked: %s",
+                 error.what());
+        leds.SetBlocked(true);
+        WaitForShutdown();
         return 1;
     }
 
-    // mDNS: register _esphomelib._tcp so HA auto-discovers us.
-    lva::proto::MdnsPublisher mdns;
-    {
-        lva::proto::MdnsPublisher::Options mdns_opts;
-        mdns_opts.name    = state.name;
-        mdns_opts.port    = cli.port;
-        mdns_opts.mac     = state.mac_address;
-        mdns_opts.version = state.esphome_version;
-        if (!mdns.Start(mdns_opts)) {
-            LVA_LOGW(kTag, "mDNS registration failed; device won't "
-                           "be auto-discovered by HA");
-        }
+    LVA_LOGI(kTag,
+             "linux-voice-assistant-cpp %s starting "
+             "(satellite_id=%s endpoint=%s)",
+             kVersion, config.satellite_id.c_str(), config.endpoint.c_str());
+
+    std::shared_ptr<lva::cortana::SessionDependencies> dependencies;
+    try {
+        dependencies =
+            std::make_shared<lva::cortana::CurlSessionDependencies>();
+    } catch (const std::exception& error) {
+        LVA_LOGE(kTag, "Cortana transport initialization is blocked: %s",
+                 error.what());
+        leds.SetBlocked(true);
+        WaitForShutdown();
+        return 1;
     }
 
-    if (music_player->WakeupFd() >= 0) {
-        server.AddAuxFd(music_player->WakeupFd(),
-                        [&music_player] {
-                            music_player->DrainEvents();
-                        });
-    }
-    if (announce_player->WakeupFd() >= 0) {
-        server.AddAuxFd(announce_player->WakeupFd(),
-                        [&announce_player] {
-                            announce_player->DrainEvents();
-                        });
-    }
+    lva::cortana::SessionClient session(config, std::move(dependencies));
+    session.Start();
 
-    if (!audio_capture->Start()) {
-        LVA_LOGW(kTag, "audio capture failed to start; mic-using "
-                       "features (wake word) will be unavailable");
-    }
+    bool muted = false;
+    lva::tr::MicMuteGpio mute_gpio(
+        [&session, &muted](bool new_muted, lva::tr::MuteChangeSource) {
+            muted = new_muted;
+            (void)session.EnqueueText(
+                lva::cortana::SerializeMuteChanged(new_muted));
+        });
+    if (mute_gpio.Available()) (void)mute_gpio.ReadAndApplyOnce();
 
-    auto wakeword_engine =
-        std::make_unique<lva::audio::WakeWordEngine>(*pcm_ring);
-
-    {
-        const std::string& list = cli.wakeword_models;
-        std::size_t start = 0;
-        while (start < list.size()) {
-            std::size_t comma = list.find(',', start);
-            if (comma == std::string::npos) comma = list.size();
-            std::string id(list, start, comma - start);
-            while (!id.empty() && std::isspace(static_cast<unsigned char>(id.front()))) id.erase(0,1);
-            while (!id.empty() && std::isspace(static_cast<unsigned char>(id.back())))  id.pop_back();
-            if (!id.empty()) {
-                const auto json_path = wakeword_dir / (id + ".json");
-                if (use_openwakeword) {
-                    auto model = lva::audio::OpenWakeWord::FromConfig(json_path);
-                    if (model && model->Ok()) {
-                        wakeword_engine->AddOpenModel(std::move(model));
-                    } else {
-                        LVA_LOGW(kTag, "failed to load OWW '%s'", id.c_str());
-                    }
-                } else {
-                    auto model = lva::audio::MicroWakeWord::FromConfig(json_path);
-                    if (model && model->Ok()) {
-                        wakeword_engine->AddModel(std::move(model));
-                    } else {
-                        LVA_LOGW(kTag, "failed to load wake word '%s'", id.c_str());
-                    }
-                }
-            }
-            start = comma + 1;
-        }
-    }
-
-    if (use_openwakeword) {
-        auto oww_feat = std::make_unique<lva::audio::OpenWakeWordFeatures>();
-        if (oww_feat->Load(wakeword_dir)) {
-            wakeword_engine->SetOpenFeatures(std::move(oww_feat));
-        } else {
-            LVA_LOGE(kTag, "OpenWakeWord features failed to load");
-        }
-    }
-
-    if (!use_openwakeword) {
-        // Stop word only for micro mode (micro-specific model)
-        const std::filesystem::path micro_dir =
-            "/usr/share/thirdreality/wakewords/microwakeword";
-        const auto stop_json = micro_dir / "stop.json";
-        auto stop_model = lva::audio::MicroWakeWord::FromConfig(stop_json);
-        if (stop_model && stop_model->Ok()) {
-            wakeword_engine->AddModel(std::move(stop_model));
-        } else {
-            LVA_LOGW(kTag, "stop word model not loaded");
-        }
-    }
-
-    // Voice satellite state machine.
-    auto satellite = std::make_unique<lva::satellite::Satellite>(
-        state, *satellite_ring, *wakeword_engine, announce_player.get(),
-        *led_controller);
-    state.satellite = satellite.get();
-
-    // When HA disconnects, reset satellite state.
-    state.on_client_disconnected = [&satellite] {
-        satellite->OnDisconnected();
-    };
-
-    auto sound_watcher = std::make_unique<lva::tr::SoundConfWatcher>(
-        state, cli.preferences_file);
-
-    auto supervisor = std::make_unique<lva::tr::Supervisor>();
-    state.supervisor = supervisor.get();
-    auto supervisor_http =
-        std::make_unique<lva::tr::SupervisorHttpServer>(*supervisor);
-    if (!supervisor_http->Start()) {
-        LVA_LOGW(kTag, "supervisor HTTP failed to start; OTA over "
-                       "the legacy supervisor API will not be "
-                       "available (HA UI Update entity still works)");
-    }
-
-    wakeword_engine->SetDetectionCallback(
-        [&satellite](const std::string& model_id, float prob) {
-            if (model_id == "stop") {
-                LVA_LOGD("wake",
-                         "stop word detected prob=%.3f", prob);
-                satellite->OnStopDetected();
-            } else {
-                LVA_LOGD("wake",
-                         "wake word detected id=%s prob=%.3f",
-                         model_id.c_str(), prob);
-                satellite->OnWakeDetected(model_id, prob);
+    std::uint64_t activation_sequence = 0;
+    lva::tr::HomeButton home_button(
+        lva::tr::HomeButton::Options{},
+        [&session, &activation_sequence](lva::tr::HomeButtonPress press) {
+            const auto snapshot = session.Snapshot();
+            const auto action = lva::tr::PhysicalControlPolicy::OnHomeButton(
+                press, EndpointActivityFor(snapshot));
+            if (action == lva::tr::ControlAction::ManualWake) {
+                (void)session.EnqueueText(lva::cortana::SerializeWakeManual(
+                    NewManualActivationId(++activation_sequence)));
+            } else if (action == lva::tr::ControlAction::CancelTurn) {
+                (void)session.EnqueueText(lva::cortana::SerializeTurnCancel(
+                    std::nullopt, lva::cortana::CancellationSource::Physical,
+                    "user_cancelled"));
             }
         });
-
-    state.wakeword_engine = wakeword_engine.get();
-    g_wakeword_engine = wakeword_engine.get();
-
-    if (!wakeword_engine->Start()) {
-        LVA_LOGW(kTag, "wake-word engine failed to start; voice "
-                       "pipeline disabled");
+    const int home_button_fd = home_button.Start();
+    if (home_button_fd < 0) {
+        LVA_LOGW(kTag, "%s", "home button monitor disabled");
     }
 
-    const int satellite_tick_fd = ::timerfd_create(CLOCK_MONOTONIC,
-                                                   TFD_CLOEXEC | TFD_NONBLOCK);
-    if (satellite_tick_fd >= 0) {
-        itimerspec ts{};
-        ts.it_value.tv_sec     = 0;
-        ts.it_value.tv_nsec    = 50'000'000;  // first fire 50 ms
-        ts.it_interval.tv_sec  = 0;
-        ts.it_interval.tv_nsec = 50'000'000;  // every 50 ms
-        if (::timerfd_settime(satellite_tick_fd, 0, &ts, nullptr) == 0) {
-            server.AddAuxFd(satellite_tick_fd,
-                            [&satellite, &mic_mute_gpio, &sound_watcher,
-                             &led_controller,
-                             update_entity_ptr, satellite_tick_fd] {
-                std::uint64_t expirations = 0;
-                while (::read(satellite_tick_fd,
-                              &expirations, sizeof(expirations)) > 0) {
-                    // drain — we don't care about the count
-                }
-                satellite->OnLoopTick();
-                mic_mute_gpio->Poll();
-                led_controller->Poll();
-                sound_watcher->Poll();
-                if (update_entity_ptr) update_entity_ptr->OnPeriodicTick();
-            });
+    lva::cortana::SessionPhase logged_phase =
+        lva::cortana::SessionPhase::Stopped;
+    std::uint64_t mute_synced_generation = 0;
+    while (g_shutdown_signal.load(std::memory_order_relaxed) == 0) {
+        if (home_button_fd >= 0) {
+            pollfd descriptor{
+                .fd = home_button_fd,
+                .events = POLLIN,
+                .revents = 0,
+            };
+            const int result = ::poll(&descriptor, 1, 50);
+            if (result > 0 && (descriptor.revents & POLLIN) != 0) {
+                home_button.OnMainLoopWake();
+            } else if (result < 0 && errno != EINTR) {
+                LVA_LOGW(kTag, "home button poll failed: %s",
+                         std::strerror(errno));
+            }
         } else {
-            LVA_LOGW(kTag, "timerfd_settime failed; satellite ticks disabled");
-            ::close(satellite_tick_fd);
+            std::this_thread::sleep_for(50ms);
         }
-    } else {
-        LVA_LOGW(kTag, "timerfd_create failed; satellite ticks disabled");
-    }
 
-    lva::tr::HomeButton::Options home_btn_opts;
-    auto home_button = std::make_unique<lva::tr::HomeButton>(
-        home_btn_opts,
-        [&state, home_button_entity_key](lva::tr::HomeButtonPress press) {
-            const char* event_type = nullptr;
-            switch (press) {
-                case lva::tr::HomeButtonPress::Single:
-                    event_type = "single_press";
-                    break;
-                case lva::tr::HomeButtonPress::Double:
-                    event_type = "double_press";
-                    break;
-                case lva::tr::HomeButtonPress::Triple:
-                    event_type = "triple_press";
-                    break;
-            }
-            if (!state.broadcast) {
-                LVA_LOGW("home_btn", "no broadcast hook; click dropped");
-                return;
-            }
-            ::EventResponse response;
-            response.set_key(home_button_entity_key);
-            response.set_event_type(event_type);
-            state.broadcast(lva::proto::kIdEventResponse, response);
-        });
-    {
-        const int hb_fd = home_button->Start();
-        if (hb_fd >= 0) {
-            server.AddAuxFd(hb_fd, [&home_button] {
-                home_button->OnMainLoopWake();
-            });
-        } else {
-            LVA_LOGW(kTag, "home button monitor disabled");
+        mute_gpio.Poll();
+        leds.Poll();
+        while (session.TryPopEvent().has_value()) {
+        }
+
+        const auto snapshot = session.Snapshot();
+        ApplyLedState(snapshot, leds);
+        if (snapshot.phase != logged_phase) {
+            logged_phase = snapshot.phase;
+            LVA_LOGI(kTag, "Cortana session phase=%.*s generation=%llu%s%s",
+                     static_cast<int>(lva::cortana::ToString(snapshot.phase).size()),
+                     lva::cortana::ToString(snapshot.phase).data(),
+                     static_cast<unsigned long long>(snapshot.generation),
+                     snapshot.detail.empty() ? "" : " detail=",
+                     snapshot.detail.c_str());
+        }
+        if (snapshot.phase == lva::cortana::SessionPhase::Ready &&
+            mute_synced_generation != snapshot.generation &&
+            session.EnqueueText(lva::cortana::SerializeMuteChanged(muted))) {
+            mute_synced_generation = snapshot.generation;
         }
     }
 
-
-    const int rc = server.Run();
-    g_server = nullptr;
-    g_wakeword_engine = nullptr;
-
-    if (supervisor_http) supervisor_http->Stop();
-    mdns.Stop();
-    home_button->Stop();
-    wakeword_engine->Stop();
-    audio_capture->Stop();
-
-    const int signo = g_shutdown_signal.load(std::memory_order_relaxed);
-    if (signo != 0) {
-        LVA_LOGI(kTag, "exiting after signal %d", signo);
-    }
-    ::_exit(rc);
+    home_button.Stop();
+    session.Stop();
+    const int signal = g_shutdown_signal.load(std::memory_order_relaxed);
+    LVA_LOGI(kTag, "exiting after signal %d", signal);
+    return 0;
 }

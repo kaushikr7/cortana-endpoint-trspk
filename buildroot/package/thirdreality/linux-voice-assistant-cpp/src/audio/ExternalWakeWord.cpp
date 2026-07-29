@@ -21,7 +21,7 @@ namespace {
 constexpr const char* kTag = "wakeword";
 
 // ---------------------------------------------------------------------------
-// Minimal SHA-256 (self-contained, mirrors OtaClient's vendored MD5 so we
+// Minimal SHA-256 (self-contained so we
 // don't pull in an OpenSSL dependency just for one hash).
 // ---------------------------------------------------------------------------
 class Sha256 {
