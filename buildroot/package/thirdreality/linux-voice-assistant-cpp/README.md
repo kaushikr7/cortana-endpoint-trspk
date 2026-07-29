@@ -26,7 +26,6 @@ aarch64, Buildroot).
 - Home button monitor (/dev/input/event0, single/double/triple press)
 - Mic mute GPIO bridge (hardware slider ↔ HA switch)
 - ALSA system volume sync via adckey_function.sh
-- Sendspin duck/unduck (SIGUSR1/2) during voice pipelines
 - sound.json external-change watcher (500 ms poll)
 - Supervisor HTTP API on port 8086 (HMAC-MD5 signed commands)
 - OTA: check version, download, MD5 verify, swupdate install
@@ -92,7 +91,7 @@ src/audio/                  AudioCapture, LibMpvPlayer, PcmRingBuffer,
                             WebRtcProcessor, IAudioPlayer
 src/satellite/              Voice pipeline state machine
 src/tr/                     ThirdReality integration (LED, GPIO, home
-                            button, volume, sendspin, supervisor, OTA,
+                            button, volume, supervisor, OTA,
                             timezone sync, sound.json watcher)
 src/tools/                  Dev tools (micro_features_dump, tflite_inspect,
                             wake_word_dump, aec_loopback_test)

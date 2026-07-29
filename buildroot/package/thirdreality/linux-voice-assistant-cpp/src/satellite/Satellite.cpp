@@ -15,7 +15,6 @@
 #include "protocol/MessageRegistry.h"
 #include "state/ServerState.h"
 #include "tr/LedRing.h"
-#include "tr/SendspinSignal.h"
 #include "util/Log.h"
 
 #include "api.pb.h"
@@ -314,7 +313,6 @@ void Satellite::PlayAnnounce(const std::string& media_id,
 void Satellite::Duck() {
     if (ducked_) return;
     ducked_ = true;
-    lva::tr::SendspinDuck();
     if (state_.music_player) {
         pre_duck_volume_ = state_.volume.load(std::memory_order_relaxed);
         state_.music_player->SetVolume(pre_duck_volume_ * kDuckFactor);
@@ -324,7 +322,6 @@ void Satellite::Duck() {
 void Satellite::Unduck() {
     if (!ducked_) return;
     ducked_ = false;
-    lva::tr::SendspinUnduck();
     if (state_.music_player) {
         state_.music_player->SetVolume(pre_duck_volume_);
     }

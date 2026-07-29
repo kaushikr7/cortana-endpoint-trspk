@@ -1,18 +1,20 @@
-# Voice&Music Assistant
+# ThirdReality Voice Assistant
 
 <div align="center">
   <img src="doc/images/voice-music-speaker.jpg" alt="voice-music-speaker" width="300">
 </div>
 
-ThirdReality Voice&Music Assistant is an open-source speaker that supports connecting to the Home Assistant Voice Assistant and Music Assistant. You need to have a device running Home Assistant in order to use this speaker. If you do not have Home Assistant installed yet, refer to the [installation documentation](https://www.home-assistant.io/installation/) for instructions. [Buy it on ThirdReality Shop](https://thirdreality.com/product/voice-music-assistant-dev-edition/)
+ThirdReality Voice Assistant is an open-source speaker firmware derived from
+the ThirdReality Voice&Music Assistant. This fork is being converted into a
+dedicated Cortana endpoint; see [the build plan](doc/build.md) for the current
+architecture and implementation sequence.
 
 
 ## Architecture
 
-The firmware consists of two main application components:
+The current firmware voice application is:
 
 - **Voice** — built on [linux-voice-assistant-cpp](buildroot/package/thirdreality/linux-voice-assistant-cpp/), a C++ rewrite of [OHF-Voice/linux-voice-assistant](https://github.com/OHF-Voice/linux-voice-assistant.git). Implements the ESPHome native API so Home Assistant discovers the speaker as a voice satellite. See its [README](buildroot/package/thirdreality/linux-voice-assistant-cpp/README.md) for details.
-- **Music** — built on [Sendspin](https://www.sendspin-audio.com/), a lightweight streaming protocol integrated with [Music Assistant](https://www.music-assistant.io/).
 
 <div align="center">
   <img src="doc/images/button_functions.png" alt="button-functions" width="600">
@@ -20,7 +22,7 @@ The firmware consists of two main application components:
 
 ---
 
-- [Voice\&Music Assistant](#voicemusic-assistant)
+- [ThirdReality Voice Assistant](#thirdreality-voice-assistant)
   - [Architecture](#architecture)
   - [Build](#build)
     - [Docker Build](#docker-build)
@@ -34,10 +36,6 @@ The firmware consists of two main application components:
   - [Setup through HA APP](#setup-through-ha-app)
   - [Smart Home control with voice](#smart-home-control-with-voice)
   - [Smart Home control with button](#smart-home-control-with-button)
-  - [Play Music](#play-music)
-  - [Multi-Room Music](#multi-room-music)
-    - [Work with Apple HomePod](#work-with-apple-homepod)
-    - [Work with Sonos](#work-with-sonos)
 
 ---
 
@@ -274,89 +272,4 @@ We can create automation scripts based on the speaker's Home button trigger even
   <img src="doc/images/button-control-3.png" width="30%">
   <img src="doc/images/button-control-4.png" width="30%">
   <img src="doc/images/button-control-5.png" width="30%">
-</div>
-
----
-
-## Play Music
-
-We can use [Music Assistant](https://www.home-assistant.io/integrations/music_assistant/) to play music.
-
-**Settings → Add-ons** → search for and add **Music Assistant**. After adding it, you can access it via port 8095.
-
-If it doesn’t exist, please add it using [Music Assistant github repository](https://github.com/music-assistant/home-assistant-addon.git)
-
-<div align="left">
-  <img src="doc/images/music-1.png" width="30%">
-</div>
-
-Go to the Music Assistant: **Settings → Player Providers → Add a player provider**. Search for Sendspin and add it.
-
-<div align="left">
-  <img src="doc/images/music-2.png" width="30%">
-</div>
-
-Then you can go to **Settings → Players** and find the player named 3RSPK-XXXXXXXXXXXX. 
-
-<div align="left">
-  <img src="doc/images/music-3.png" width="30%">
-</div>
-
-If it doesn’t show up, try reloading Sendspin.
-
-<div align="left">
-  <img src="doc/images/music-4.png" width="30%">
-</div>
-
-Next, we need to add music sources. Go to **Settings → Music Sources → Add a music source**, then select your desired music source.
-
-<div align="left">
-  <img src="doc/images/music-5.png" width="30%">
-</div>
-
-
-Finally, select a song and the speaker, and you can start playback! 🎵
-
-<div align="left">
-  <img src="doc/images/music-6.png" width="30%">
-</div>
-
----
-
-## Multi-Room Music
-
-Official documentation: https://www.music-assistant.io/faq/groups/#groups
-
-We use [Sendspin](https://www.sendspin-audio.com/) as the playback protocol, so it can work with any device that supports AirPlay.
-
-### Work with Apple HomePod
-
-Go to the Music Assistant: **Settings → Player Providers → Add a player provider**. Search for and add AirPlay and Sync Group Player.
-
-<div align="left">
-  <img src="doc/images/music-6.png" width="30%">
-</div>
-
-Then you can create a sync group player with your thirdreality speaker and HomePod.
-
-<div align="left">
-  <img src="doc/images/music-7.png" width="30%">
-  <img src="doc/images/music-8.png" width="30%">
-  <img src="doc/images/music-9.png" width="30%">
-</div>
-
-### Work with Sonos
-
-Go to the Music Assistant: **Settings → Player Providers → Add a player provider**. Search for and add SONOS and Universal Group Player.
-
-<div align="left">
-  <img src="doc/images/music-10.png" width="30%">
-</div>
-
-Then you can create a universal group player with your thirdreality speaker and Sonos.
-
-<div align="left">
-  <img src="doc/images/music-11.png" width="30%">
-  <img src="doc/images/music-12.png" width="30%">
-  <img src="doc/images/music-13.png" width="30%">
 </div>

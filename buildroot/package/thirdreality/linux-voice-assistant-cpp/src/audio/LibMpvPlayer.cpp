@@ -264,8 +264,7 @@ void LibMpvPlayer::Stop() {
 void LibMpvPlayer::SetVolume(double normalized) {
     user_volume_ = Clamp01(normalized);
     if (mpv_ == nullptr) return;
-    // Use sqrt curve to match sendspin's software attenuation.
-    // This gives a gentler rolloff: 50% → ~71% output.
+    // Use a sqrt curve for a gentler rolloff: 50% → ~71% output.
     double percent = std::sqrt(user_volume_) * 100.0;
     if (const int rc = mpv_set_property(mpv_, "volume",
                                         MPV_FORMAT_DOUBLE, &percent);

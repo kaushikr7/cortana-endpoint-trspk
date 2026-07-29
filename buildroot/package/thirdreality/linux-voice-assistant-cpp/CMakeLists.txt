@@ -181,7 +181,6 @@ add_executable(linux-voice-assistant-cpp
     src/tr/LedRing.cpp
     src/tr/MicMuteGpio.cpp
     src/tr/OtaClient.cpp
-    src/tr/SendspinSignal.cpp
     src/tr/SoundConfWatcher.cpp
     src/tr/Supervisor.cpp
     src/tr/SupervisorHttpServer.cpp

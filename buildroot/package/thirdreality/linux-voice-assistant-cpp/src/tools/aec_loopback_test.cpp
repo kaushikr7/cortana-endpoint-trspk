@@ -27,9 +27,9 @@
 //
 // What it does NOT do
 // -------------------
-//   * Does not touch PulseAudio. Run this with PA still serving mpv /
-//     sendspin so the speaker is producing real playback that ends up in
-//     ch3/ch4 of hw:0,4.
+//   * Does not touch PulseAudio. Run this with PA still serving mpv / TTS so
+//     the speaker is producing real playback that ends up in ch3/ch4 of
+//     hw:0,4.
 //   * Does not load any wake-word model. Pure capture + APM verification.
 //   * Does not modify the production capture path. It opens its own ALSA
 //     handle. Run while linux-voice-assistant-cpp is stopped (or at least
@@ -755,7 +755,7 @@ int main(int argc, char** argv) {
     } else {
         std::fprintf(stderr,
                      "\nNo loud-reference periods detected — start playback "
-                     "(mpv / TTS / sendspin) before running, then re-run.\n");
+                     "(mpv / TTS) before running, then re-run.\n");
     }
     std::fprintf(stderr,
                  "WAV output: %s, %s, %s\n",

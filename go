@@ -19,7 +19,7 @@ Usage:
 Arguments:
   target      Build target name (e.g. trspk)
   version     Optional version string (default: date-based, e.g. 0.05.10)
-  package     Buildroot package name (e.g. sendspin-client, linux-voice-assistant)
+  package     Buildroot package name (e.g. linux-voice-assistant-cpp)
 
 Examples:
   ./go trspk                           Native build with date-based version
@@ -27,8 +27,8 @@ Examples:
   ./go --docker trspk                  Docker build (no host deps required)
   ./go --docker trspk 1.2.3            Docker build with version 1.2.3
   ./go --docker-shell                  Debug inside the build container
-  ./go trspk rebuild sendspin-client   Rebuild sendspin-client package
-  ./go --docker trspk rebuild sendspin-client
+  ./go trspk rebuild linux-voice-assistant-cpp
+  ./go --docker trspk rebuild linux-voice-assistant-cpp
 
 Output:
   image/<target>_<version>.img         Firmware image for USB burning
