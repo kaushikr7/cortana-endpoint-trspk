@@ -86,6 +86,24 @@ The tool requests the credential without echo, atomically installs
 permissions, validates them with the endpoint binary, and restarts the endpoint
 service.
 
+On native Windows PowerShell, use the companion script with Windows `adb.exe`:
+
+```powershell
+.\script\provision_cortana_endpoint.ps1 provision `
+  -Serial a8e29151d253 `
+  -Endpoint https://cortana.raintreeresearch.com `
+  -SatelliteId study-cortana-trspk `
+  -ExpectedAreaId study
+
+.\script\provision_cortana_endpoint.ps1 status `
+  -Serial a8e29151d253
+```
+
+The PowerShell tool has the same protected prompt, atomic target writes,
+validation, status, and `rotate-credential` behavior as the Python tool. It
+uses a short-lived Windows temporary file for `adb push`, overwrites it, and
+deletes it immediately after each transfer.
+
 ```bash
 ./script/provision_cortana_endpoint.py status --serial <usb-serial>
 ./script/provision_cortana_endpoint.py rotate-credential --serial <usb-serial>

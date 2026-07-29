@@ -336,9 +336,10 @@ It should:
 - offer a read-only status command that redacts secrets;
 - support replacing the credential during rotation.
 
-T1.2 implements the host tool as `script/provision_cortana_endpoint.py`. The
+T1.2 implements host tools as `script/provision_cortana_endpoint.py` for Linux
+and `script/provision_cortana_endpoint.ps1` for native Windows PowerShell. The
 device-side `linux-voice-assistant-cpp` binary exposes `--check-config` and
-`--status`. As of T2.4, normal startup requires this configuration and the
+`--status`. As of T2.4, normal startup requires this configuration and either
 provisioning tool restarts the endpoint after a validated install or credential
 rotation.
 
