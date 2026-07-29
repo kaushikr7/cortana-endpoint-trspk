@@ -119,6 +119,26 @@ def run_adb_shell(
     )
 
 
+def run_adb_exec_out(
+    target: AdbTarget,
+    command: str,
+    *,
+    input_bytes: bytes,
+) -> subprocess.CompletedProcess[bytes]:
+    """Run a non-interactive remote shell command with exact stdin/EOF.
+
+    ``adb shell`` may allocate an interactive terminal, particularly when a
+    Windows adb.exe is invoked through WSL. In that mode a remote ``cat`` can
+    echo input and wait indefinitely instead of observing EOF. ``exec-out``
+    provides a raw, non-interactive stream suitable for protected file writes.
+    """
+    return subprocess.run(
+        target.command("exec-out", "sh", "-c", command),
+        input=input_bytes,
+        check=True,
+    )
+
+
 def prepare_remote_directory(target: AdbTarget) -> None:
     run_adb_shell(
         target,
@@ -127,7 +147,7 @@ def prepare_remote_directory(target: AdbTarget) -> None:
 
 
 def write_remote_temp(target: AdbTarget, path: str, content: bytes) -> None:
-    run_adb_shell(
+    run_adb_exec_out(
         target,
         f"umask 077; cat > {path} && chmod 0600 {path}",
         input_bytes=content,

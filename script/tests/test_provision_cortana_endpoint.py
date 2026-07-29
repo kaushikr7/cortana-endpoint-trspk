@@ -84,6 +84,7 @@ class AdbCommandTests(unittest.TestCase):
             credential,
         )
         command = run.call_args.args[0]
+        self.assertEqual(command[:4], ["adb", "exec-out", "sh", "-c"])
         self.assertNotIn(credential.decode(), " ".join(command))
         self.assertEqual(run.call_args.kwargs["input"], credential)
 
