@@ -336,8 +336,21 @@ It should:
 - offer a read-only status command that redacts secrets;
 - support replacing the credential during rotation.
 
+T1.2 implements the host tool as `script/provision_cortana_endpoint.py`. The
+device-side `linux-voice-assistant-cpp` binary exposes `--check-config` and
+`--status`. The normal legacy HA startup path does not load the Cortana
+configuration yet; that becomes mandatory when the Cortana control plane
+replaces it.
+
 USB ADB or authenticated SSH is sufficient for initial provisioning. Do not
 build a web or BLE commissioning interface for the first endpoint.
+
+USB firmware burning and USB ADB provisioning are sequential modes, not
+competing services. Flash first in Amlogic burn mode, then boot normally and
+provision over ADB. Although the current full-image manifest does not include a
+`data` payload, never rely on `/data/cortana` surviving a full burn,
+erase/repartition option, data-volume migration, or factory reset. Check
+redacted status after every flash and reprovision when necessary.
 
 ### Server-side provisioning in Kensho
 

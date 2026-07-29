@@ -157,6 +157,7 @@ target_compile_options(lva_microfrontend PRIVATE
 
 add_executable(linux-voice-assistant-cpp
     src/main.cpp
+    src/config/EndpointConfig.cpp
     src/protocol/Frame.cpp
     src/protocol/MessageRegistry.cpp
     src/protocol/Connection.cpp

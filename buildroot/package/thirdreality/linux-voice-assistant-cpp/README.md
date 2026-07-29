@@ -68,6 +68,10 @@ All options:
 --continue-conversation-delay <s>
                            Seconds to wait after TTS finishes before opening
                            the mic for a continued conversation (default: 0.5)
+--check-config             Validate Cortana config and credential, then exit
+--status                   Print redacted Cortana config status as JSON
+--config-file <p>          Cortana config file
+--credential-file <p>      Cortana credential file
 --debug                    Enable debug logging
 --help                     Show help
 ```

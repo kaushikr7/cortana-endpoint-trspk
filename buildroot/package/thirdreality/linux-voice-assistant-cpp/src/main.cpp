@@ -34,6 +34,7 @@
 #include "audio/PcmRingBuffer.h"
 #include "audio/WakeWordEngine.h"
 #include "audio/WebRtcProcessor.h"
+#include "config/EndpointConfig.h"
 #include "entities/EventEntity.h"
 #include "entities/MediaPlayerEntity.h"
 #include "entities/MuteSwitchEntity.h"
@@ -126,12 +127,20 @@ void PrintUsage(const char* argv0) {
         "                           Seconds to wait after TTS finishes before\n"
         "                           opening the mic for a continued\n"
         "                           conversation (default: 0.5)\n"
+        "  --check-config          Validate Cortana config and credential\n"
+        "  --status                Print redacted Cortana config status as JSON\n"
+        "  --config-file <p>       Cortana config file\n"
+        "                           (default: /data/cortana/config.json)\n"
+        "  --credential-file <p>   Cortana credential file\n"
+        "                           (default: /data/cortana/credential)\n"
         "  --debug                  Enable debug logging\n"
         "  --help                   Show this help and exit\n",
         argv0);
 }
 
 struct CliOptions {
+    enum class ConfigCommand { kNone, kCheck, kStatus };
+
     std::string device_name = "3RSPK";
     std::string host = "0.0.0.0";
     std::string audio_device;
@@ -147,10 +156,19 @@ struct CliOptions {
 
     double      continue_conversation_delay = 0.5;  // seconds
 
+    ConfigCommand config_command = ConfigCommand::kNone;
+    std::filesystem::path config_file = lva::config::kDefaultConfigPath;
+    std::filesystem::path credential_file =
+        lva::config::kDefaultCredentialPath;
+
     bool debug = false;
 };
 
 bool ParseCli(int argc, char** argv, CliOptions& out) {
+    constexpr int kOptCheckConfig = 1000;
+    constexpr int kOptStatus = 1001;
+    constexpr int kOptConfigFile = 1002;
+    constexpr int kOptCredentialFile = 1003;
     static const struct option long_options[] = {
         {"name",                  required_argument, nullptr, 'n'},
         {"port",                  required_argument, nullptr, 'p'},
@@ -164,6 +182,10 @@ bool ParseCli(int argc, char** argv, CliOptions& out) {
         {"capture-mic-channel",   required_argument, nullptr, 'M'},
         {"capture-ref-channels",  required_argument, nullptr, 'R'},
         {"continue-conversation-delay", required_argument, nullptr, 'C'},
+        {"check-config",          no_argument,       nullptr, kOptCheckConfig},
+        {"status",                no_argument,       nullptr, kOptStatus},
+        {"config-file",           required_argument, nullptr, kOptConfigFile},
+        {"credential-file",       required_argument, nullptr, kOptCredentialFile},
         {"debug",                 no_argument,       nullptr, 'd'},
         {"help",                  no_argument,       nullptr, 'h'},
         {nullptr,                 0,                 nullptr, 0  },
@@ -183,6 +205,24 @@ bool ParseCli(int argc, char** argv, CliOptions& out) {
             case 'A': out.capture_alsa_device = optarg; break;
             case 'M': out.capture_mic_channel = std::atoi(optarg); break;
             case 'R': out.capture_ref_channels = optarg; break;
+            case kOptCheckConfig:
+                if (out.config_command != CliOptions::ConfigCommand::kNone) {
+                    std::fprintf(stderr,
+                                 "Choose only one of --check-config or --status\n");
+                    return false;
+                }
+                out.config_command = CliOptions::ConfigCommand::kCheck;
+                break;
+            case kOptStatus:
+                if (out.config_command != CliOptions::ConfigCommand::kNone) {
+                    std::fprintf(stderr,
+                                 "Choose only one of --check-config or --status\n");
+                    return false;
+                }
+                out.config_command = CliOptions::ConfigCommand::kStatus;
+                break;
+            case kOptConfigFile: out.config_file = optarg; break;
+            case kOptCredentialFile: out.credential_file = optarg; break;
             case 'C': {
                 char* end = nullptr;
                 const double v = std::strtod(optarg, &end);
@@ -213,7 +253,43 @@ bool ParseCli(int argc, char** argv, CliOptions& out) {
                 return false;
         }
     }
+    if (optind != argc) {
+        std::fprintf(stderr, "Unexpected positional argument: %s\n", argv[optind]);
+        return false;
+    }
     return true;
+}
+
+int RunConfigCommand(const CliOptions& cli) {
+    try {
+        const auto config = lva::config::EndpointConfig::Load(
+            cli.config_file, cli.credential_file);
+        if (cli.config_command == CliOptions::ConfigCommand::kStatus) {
+            std::printf("%s\n", config.RedactedStatusJson().c_str());
+        } else {
+            std::printf("Cortana endpoint configuration is valid "
+                        "(satelliteId=%s, endpoint=%s",
+                        config.satellite_id.c_str(), config.endpoint.c_str());
+            if (!config.expected_area_id.empty()) {
+                std::printf(", expectedAreaId=%s",
+                            config.expected_area_id.c_str());
+            }
+            std::printf(")\n");
+        }
+        return 0;
+    } catch (const lva::config::ConfigError& error) {
+        if (cli.config_command == CliOptions::ConfigCommand::kStatus) {
+            nlohmann::json status = {
+                {"configured", false},
+                {"error", error.what()},
+            };
+            std::printf("%s\n", status.dump().c_str());
+        } else {
+            std::fprintf(stderr, "Cortana configuration invalid: %s\n",
+                         error.what());
+        }
+        return 1;
+    }
 }
 
 std::string ReadMacFromDeviceJson(const std::filesystem::path& path) {
@@ -242,6 +318,10 @@ int main(int argc, char** argv) {
     CliOptions cli;
     if (!ParseCli(argc, argv, cli)) {
         return 2;
+    }
+
+    if (cli.config_command != CliOptions::ConfigCommand::kNone) {
+        return RunConfigCommand(cli);
     }
 
     lva::log::SetLevel(cli.debug ? lva::log::Level::kDebug

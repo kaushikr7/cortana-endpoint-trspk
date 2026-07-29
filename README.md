@@ -32,6 +32,7 @@ The current firmware voice application is:
     - [Serial](#serial)
     - [ADB](#adb)
     - [SSH](#ssh)
+  - [Provision a Cortana endpoint](#provision-a-cortana-endpoint)
   - [Setup the voice assist](#setup-the-voice-assist)
   - [Setup through HA APP](#setup-through-ha-app)
   - [Smart Home control with voice](#smart-home-control-with-voice)
@@ -174,6 +175,35 @@ ssh root@<device-ip>
 
 - Username: `root`
 - Password: `hello3r`
+
+## Provision a Cortana endpoint
+
+Provision through USB ADB after installing firmware containing the T1.2
+configuration commands. The credential is requested with a no-echo prompt; it
+is deliberately not accepted as a command-line argument:
+
+Firmware burning and provisioning can use the same USB cable, but not at the
+same time. Burn the image in Amlogic USB mode, boot the device normally, wait
+for USB ADB, and only then provision it. Do not assume `/data/cortana` survives
+a full image burn, erase/repartition operation, or factory reset; run `status`
+after every flash and reprovision when it reports unconfigured.
+
+```bash
+./script/provision_cortana_endpoint.py provision \
+  --serial <usb-serial> \
+  --endpoint https://cortana.raintreeresearch.com \
+  --satellite-id study-voice-1 \
+  --expected-area-id study
+```
+
+The tool atomically installs `/data/cortana/config.json` and
+`/data/cortana/credential` with mode `0600`, then asks the endpoint binary to
+validate them. Inspect redacted status or rotate only the credential with:
+
+```bash
+./script/provision_cortana_endpoint.py status --serial <usb-serial>
+./script/provision_cortana_endpoint.py rotate-credential --serial <usb-serial>
+```
 
 ## Setup the voice assist
 
