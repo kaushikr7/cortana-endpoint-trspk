@@ -391,6 +391,52 @@ void TestReconnectDropsOldAudioGeneration() {
     client->Stop();
 }
 
+void TestPersistentAudioOverloadReconnects() {
+    auto options = FastOptions();
+    options.maximum_queued_audio_frames = 2;
+    options.maximum_audio_overload_strikes = 2;
+    options.audio_overload_window = 1s;
+    auto dependencies = std::make_shared<FakeDependencies>(
+        std::vector<ConnectionPlan>{{
+            std::nullopt, false, false, true, false}, {}});
+    auto client = MakeClient(dependencies, options);
+    client->Start();
+    assert(client->WaitForPhase(SessionPhase::Ready, 1s));
+    assert(WaitUntil([&] { return client->Snapshot().audio_started; }));
+    const auto first_generation = client->Snapshot().generation;
+    std::array<std::byte, lva::cortana::kMicrophoneFrameBytes> frame{};
+
+    assert(client->EnqueueAudioFrame(first_generation, frame));
+    const auto first = dependencies->State(0);
+    assert(first);
+    assert(WaitUntil([&] {
+        std::lock_guard lock(first->mutex);
+        return first->binary_blocked;
+    }));
+
+    for (int strike = 0; strike < 2; ++strike) {
+        assert(client->EnqueueAudioFrame(first_generation, frame));
+        assert(client->EnqueueAudioFrame(first_generation, frame));
+        assert(!client->EnqueueAudioFrame(first_generation, frame));
+        client->DiscardAudioFrames();
+    }
+    assert(client->Snapshot().audio_overload_reconnects == 1);
+
+    {
+        std::lock_guard lock(first->mutex);
+        first->release_binary = true;
+        first->condition.notify_all();
+    }
+    assert(WaitUntil([&] {
+        const auto snapshot = client->Snapshot();
+        return snapshot.generation > first_generation &&
+            snapshot.phase == SessionPhase::Ready &&
+            snapshot.audio_started;
+    }));
+    assert(dependencies->TicketRequests() >= 2);
+    client->Stop();
+}
+
 void TestReconnectRefreshesTicket() {
     auto dependencies = std::make_shared<FakeDependencies>(
         std::vector<ConnectionPlan>{{1012, false}, {}});
@@ -507,6 +553,7 @@ int main() {
     TestHandshakeAndEndpoint();
     TestAudioGenerationMuteAndBackpressure();
     TestReconnectDropsOldAudioGeneration();
+    TestPersistentAudioOverloadReconnects();
     TestReconnectRefreshesTicket();
     TestReplacementCloseIsTerminal();
     TestNegotiatedIdentityMismatchIsTerminal();

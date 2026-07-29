@@ -96,6 +96,8 @@ SessionClient::SessionClient(
         options_.maximum_queued_commands == 0 ||
         options_.maximum_queued_events == 0 ||
         options_.maximum_queued_audio_frames == 0 ||
+        options_.maximum_audio_overload_strikes == 0 ||
+        options_.audio_overload_window <= std::chrono::milliseconds::zero() ||
         options_.maximum_command_bytes == 0 ||
         options_.handshake_timeout <= std::chrono::milliseconds::zero() ||
         options_.receive_poll <= std::chrono::milliseconds::zero() ||
@@ -118,6 +120,9 @@ void SessionClient::Start() {
     snapshot_ = SessionSnapshot{};
     commands_.clear();
     audio_frames_.clear();
+    audio_overload_strikes_ = 0;
+    last_audio_overload_ = SteadyClock::time_point{};
+    audio_reconnect_requested_ = false;
     events_.clear();
     worker_ = std::thread([this] { Run(); });
 }
@@ -163,9 +168,26 @@ bool SessionClient::EnqueueAudioFrame(
     std::lock_guard lock(mutex_);
     if (snapshot_.phase != SessionPhase::Ready ||
         !snapshot_.audio_started || snapshot_.microphone_muted ||
-        generation != snapshot_.generation ||
-        audio_frames_.size() >= options_.maximum_queued_audio_frames) {
+        generation != snapshot_.generation) {
         ++snapshot_.dropped_audio_frames;
+        return false;
+    }
+    if (audio_frames_.size() >= options_.maximum_queued_audio_frames) {
+        ++snapshot_.dropped_audio_frames;
+        const auto now = clock_();
+        if (last_audio_overload_ == SteadyClock::time_point{} ||
+            now - last_audio_overload_ > options_.audio_overload_window) {
+            audio_overload_strikes_ = 0;
+        }
+        last_audio_overload_ = now;
+        ++audio_overload_strikes_;
+        if (audio_overload_strikes_ >=
+            options_.maximum_audio_overload_strikes) {
+            audio_reconnect_requested_ = true;
+            ++snapshot_.audio_overload_reconnects;
+            DropQueuedAudioLocked();
+            condition_.notify_all();
+        }
         return false;
     }
     audio_frames_.push_back(frame);
@@ -306,6 +328,16 @@ void SessionClient::RunConnection(const DeviceTicket& ticket,
     bool ready = false;
 
     while (!StopRequested()) {
+        {
+            std::lock_guard lock(mutex_);
+            if (audio_reconnect_requested_) {
+                audio_reconnect_requested_ = false;
+                audio_overload_strikes_ = 0;
+                last_audio_overload_ = SteadyClock::time_point{};
+                throw SessionTransportError(
+                    "audio transport remained overloaded");
+            }
+        }
         if (ready) {
             std::optional<std::string> command;
             {
@@ -504,6 +536,9 @@ void SessionClient::SetReady(const SessionReady& ready,
         snapshot_.activity = ready.activity;
         snapshot_.session_id = ready.session_id;
         snapshot_.detail.clear();
+        audio_overload_strikes_ = 0;
+        last_audio_overload_ = SteadyClock::time_point{};
+        audio_reconnect_requested_ = false;
     }
     condition_.notify_all();
 }

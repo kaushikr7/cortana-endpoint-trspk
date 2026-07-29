@@ -43,6 +43,7 @@ struct SessionSnapshot {
     std::size_t queued_audio_frames = 0;
     std::uint64_t audio_frames_sent = 0;
     std::uint64_t dropped_audio_frames = 0;
+    std::uint64_t audio_overload_reconnects = 0;
 };
 
 struct SessionEvent {
@@ -56,6 +57,8 @@ public:
         std::size_t maximum_queued_commands = 32;
         std::size_t maximum_queued_events = 32;
         std::size_t maximum_queued_audio_frames = 8;
+        std::size_t maximum_audio_overload_strikes = 3;
+        std::chrono::milliseconds audio_overload_window{2000};
         std::size_t maximum_command_bytes = 64 * 1024;
         std::chrono::milliseconds handshake_timeout{8000};
         std::chrono::milliseconds receive_poll{10};
@@ -129,6 +132,9 @@ private:
     std::deque<std::string> commands_;
     std::deque<std::array<std::byte, kMicrophoneFrameBytes>> audio_frames_;
     std::deque<SessionEvent> events_;
+    std::size_t audio_overload_strikes_ = 0;
+    SteadyClock::time_point last_audio_overload_{};
+    bool audio_reconnect_requested_ = false;
     bool stop_requested_ = false;
     std::thread worker_;
 };

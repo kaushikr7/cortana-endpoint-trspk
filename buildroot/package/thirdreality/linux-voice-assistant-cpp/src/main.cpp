@@ -481,7 +481,9 @@ int main(int argc, char** argv) {
                      "reference_periods=%llu queue=%zu/%zu high=%zu "
                      "overrun=%llu discarded=%llu recoveries=%llu "
                      "short_reads=%llu processing_failures=%llu max_us=%llu "
-                     "frames_enqueued=%llu frames_rejected=%llu",
+                     "frames_enqueued=%llu frames_rejected=%llu "
+                     "session_queue=%zu session_sent=%llu session_dropped=%llu "
+                     "overload_reconnects=%llu generation=%llu",
                      metrics.running ? 1 : 0,
                      static_cast<unsigned long long>(metrics.periods_captured),
                      static_cast<unsigned long long>(metrics.samples_captured),
@@ -502,7 +504,15 @@ int main(int argc, char** argv) {
                      static_cast<unsigned long long>(
                          ingress_metrics.frames_enqueued),
                      static_cast<unsigned long long>(
-                         ingress_metrics.frames_rejected));
+                         ingress_metrics.frames_rejected),
+                     snapshot.queued_audio_frames,
+                     static_cast<unsigned long long>(
+                         snapshot.audio_frames_sent),
+                     static_cast<unsigned long long>(
+                         snapshot.dropped_audio_frames),
+                     static_cast<unsigned long long>(
+                         snapshot.audio_overload_reconnects),
+                     static_cast<unsigned long long>(snapshot.generation));
         }
     }
 
