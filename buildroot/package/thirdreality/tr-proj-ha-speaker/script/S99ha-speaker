@@ -62,8 +62,13 @@ stop_netmonitor() {
 start_voice_assistant() {
     is_running "$VOICE_PIDFILE" && return 0
     rm -f "$VOICE_PIDFILE" "$DISABLE_VOICE"
-    /usr/bin/linux-voice-assistant-cpp &
-    echo $! > "$VOICE_PIDFILE"
+    # Detach from the caller so a restart issued through an ADB shell does not
+    # terminate the endpoint when that shell closes.
+    if ! start-stop-daemon -S -q -b -m -p "$VOICE_PIDFILE" \
+        -x /usr/bin/linux-voice-assistant-cpp; then
+        rm -f "$VOICE_PIDFILE"
+        return 1
+    fi
 }
 
 stop_voice_assistant() {
