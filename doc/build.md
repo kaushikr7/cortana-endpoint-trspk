@@ -388,27 +388,30 @@ candidate wins deterministically.
 
 ### Design rules
 
-- One component must own durable LED state. Do not let the voice endpoint,
+- One component must own durable ring state. Do not let the voice endpoint,
   volume scripts, and update code continuously fight over the ring.
 - Use a small priority-based `LedController` rather than direct LED calls spread
   through the state machine.
+- The physical mute button has its own LED. That dedicated LED is the sole mute
+  indicator; do not consume the ring or add a ring animation for mute/unmute.
 - Ready/armed should be dark after a short success indication. A permanently
   glowing ring is distracting.
 - Transient network loss should not flash an error immediately. Show a fault
   only after a short grace period.
-- Muted and blocked configuration/authentication states must remain visible.
+- Blocked configuration/authentication states must remain visible on the ring.
+- Verify the dedicated mute-button LED remains synchronized with the physical
+  mute state independently of Cortana connectivity and ring activity.
 - Reuse the existing D-Bus LED service and animation-file format. Create clearer
   Cortana-specific animations when the existing names/colors are ambiguous.
 
 Suggested priority from highest to lowest:
 
-1. physical microphone mute;
-2. blocked configuration/authentication;
-3. firmware update or unrecoverable device fault;
-4. active Cortana turn;
-5. degraded/reconnecting connection;
-6. short volume or button overlay;
-7. ready/armed idle.
+1. blocked configuration/authentication;
+2. firmware update or unrecoverable device fault;
+3. active Cortana turn;
+4. degraded/reconnecting connection;
+5. short volume or button overlay;
+6. ready/armed idle.
 
 Suggested visible states:
 
@@ -423,7 +426,6 @@ Suggested visible states:
 | speaking | existing `active-talking.animation` |
 | follow-up listening | existing `active-waking.animation` |
 | recoverable protocol error | one short `error.animation`, then current state |
-| microphone muted | existing persistent `mics-off_on.animation` |
 | firmware update | distinct purple progress/rotation pattern |
 
 The current C++ `LedRing` incorrectly maps `Error` to
@@ -457,7 +459,8 @@ Hardware mute always wins. When muted:
 - discard queued microphone audio;
 - cancel any active turn with source `mute`;
 - send `mute.changed` if connected;
-- show the persistent muted LED state;
+- ensure the dedicated mute-button LED indicates the hardware state;
+- do not change the ring merely because mute was engaged or released;
 - do not reconnect merely because mute is active.
 
 On unmute, send `mute.changed`, resume continuous capture with a fresh bounded
@@ -588,10 +591,14 @@ output as image-build context.
 ### Cold build
 
 The Docker path removes the Ubuntu 20.04 VM requirement but does not make the
-first Buildroot build fast:
+first Buildroot build fast. These commands only need to run on the dedicated
+Docker-capable builder; an editing workspace does not need Docker, the toolchain
+submodule, Buildroot downloads, or an output tree:
 
 ```bash
 git submodule update --init --depth 1
+df -h .
+du -sh . buildroot/dl output image 2>/dev/null || true
 ./go --docker trspk baseline
 ```
 
@@ -691,9 +698,12 @@ cleanup so a regression can be assigned to one dependency slice.
 #### T0.1 Docker and source setup — Low
 
 - Add `.dockerignore` with only the Dockerfile included.
-- Initialize submodules and record host disk usage before the cold build.
-- Build `./go --docker trspk baseline`; do not treat the long first Buildroot
-  compile as evidence that incremental builds will be equally slow.
+- On the Docker-capable builder, initialize submodules and record disk usage
+  before the cold build. Build-only submodules are optional in editing-only
+  workspaces.
+- On that builder, run `./go --docker trspk baseline`; do not treat the long
+  first Buildroot compile as evidence that incremental builds will be equally
+  slow.
 
 #### T0.2 Boot and hardware inventory — Medium
 
@@ -820,8 +830,9 @@ no on-device wake implementation or model.
 
 - Implement playback started/completed/stopped acknowledgements after the
   correct physical drain or flush point.
-- Map listening, thinking, speaking, cancellation, reconnect, blocked, and mute
-  to the endpoint state machine and LED priority.
+- Map listening, thinking, speaking, cancellation, reconnect, and blocked state
+  to the endpoint state machine and ring priority. Keep mute indication on the
+  dedicated mute-button LED.
 
 #### T4.3 Remove MPV/FFmpeg and trim sound assets — Medium
 
@@ -908,9 +919,11 @@ device:
 - speech, tools, and response audio remain isolated to the correct room;
 - response PCM plays fully and playback completion is acknowledged after drain;
 - mute stops transmission and cancels the active turn;
+- the dedicated mute-button LED accurately reflects physical mute state without
+  using or overriding the ring;
 - the home button manually activates or cancels according to state;
 - LED states distinguish ready, listening, thinking, speaking, reconnecting,
-  blocked, muted, and update states without competing writers;
+  blocked, and update states without competing ring writers;
 - Wi-Fi and Cortana restarts recover without rebooting the device or replaying
   stale audio;
 - revoked or mismatched credentials fail closed and show a blocked status;
