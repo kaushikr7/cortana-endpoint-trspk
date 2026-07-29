@@ -14,6 +14,7 @@
 
 namespace lva::audio    { class WakeWordEngine; class PcmRingBuffer; class IAudioPlayer; }
 namespace lva::state    { class ServerState; }
+namespace lva::tr       { class LedController; }
 
 namespace lva::satellite {
 
@@ -22,7 +23,8 @@ class Satellite {
     Satellite(lva::state::ServerState& state,
               lva::audio::PcmRingBuffer& mic_ring,
               lva::audio::WakeWordEngine& engine,
-              lva::audio::IAudioPlayer* announce_player);
+              lva::audio::IAudioPlayer* announce_player,
+              lva::tr::LedController& leds);
     ~Satellite();
 
     Satellite(const Satellite&)            = delete;
@@ -75,6 +77,7 @@ class Satellite {
     lva::audio::PcmRingBuffer&  mic_ring_;
     lva::audio::WakeWordEngine& engine_;
     lva::audio::IAudioPlayer*   announce_player_ = nullptr;
+    lva::tr::LedController&     leds_;
 
     std::atomic<bool> pending_wake_{false};
     PendingWake       pending_wake_data_;

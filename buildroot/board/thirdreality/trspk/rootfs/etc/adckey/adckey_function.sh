@@ -75,7 +75,6 @@ do_volume_change() {
     flock -u 200
     exec 200>&-
 
-    dbus-send --system --type=signal /com/3r/EventBus com._3reality.EventBus.LedShow boolean:false array:string:'/usr/share/thirdreality/animation/volume-changed.animation'
 }
 
 factory_reset() {
@@ -139,7 +138,6 @@ set_volume() {
     exec 200>&-
 
     echo "SetVolume: $vol%"
-    dbus-send --system --type=signal /com/3r/EventBus com._3reality.EventBus.LedShow boolean:false array:string:'/usr/share/thirdreality/animation/volume-changed.animation'
 }
 
 change_wifi() {

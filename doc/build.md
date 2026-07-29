@@ -441,9 +441,9 @@ Suggested visible states:
 | recoverable protocol error | one short `error.animation`, then current state |
 | firmware update | distinct purple progress/rotation pattern |
 
-The current C++ `LedRing` incorrectly maps `Error` to
-`active-ending.animation` even though `error.animation` exists. Correct this in
-the new controller.
+T1.3 replaces the legacy C++ `LedRing` with `LedController`; protocol errors now
+use `error.animation` rather than the previous incorrect
+`active-ending.animation` mapping.
 
 Remove Sendspin's LED behavior with the rest of Sendspin. Route short volume
 feedback through the shared controller so it cannot overwrite a Cortana turn or
@@ -761,6 +761,11 @@ application loop exist.
   correct use of `error.animation`.
 - Use small deterministic tests for parsing, LED priority, mute, manual wake,
   and cancel transitions; do not add broad snapshot-style tests.
+
+Implementation note: the selected C++ application owns application ring state.
+Boot, factory-reset, and Wi-Fi-commissioning scripts retain only their explicit
+lifecycle animations. Volume scripts no longer write directly to the ring;
+their preference update is observed by the application controller.
 
 Gate: Sendspin is absent, the device boots normally, and configuration, mute,
 button, and LED behavior no longer require Home Assistant state.

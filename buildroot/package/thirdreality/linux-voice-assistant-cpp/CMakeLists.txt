@@ -179,7 +179,7 @@ add_executable(linux-voice-assistant-cpp
     src/audio/WebRtcProcessor.cpp
     src/satellite/Satellite.cpp
     src/tr/HomeButton.cpp
-    src/tr/LedRing.cpp
+    src/tr/LedController.cpp
     src/tr/MicMuteGpio.cpp
     src/tr/OtaClient.cpp
     src/tr/SoundConfWatcher.cpp

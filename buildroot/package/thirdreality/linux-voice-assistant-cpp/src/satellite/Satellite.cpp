@@ -14,7 +14,7 @@
 #include "audio/WakeWordScanner.h"
 #include "protocol/MessageRegistry.h"
 #include "state/ServerState.h"
-#include "tr/LedRing.h"
+#include "tr/LedController.h"
 #include "util/Log.h"
 
 #include "api.pb.h"
@@ -57,9 +57,10 @@ constexpr int kTimerMaxRingSeconds = 900;
 Satellite::Satellite(lva::state::ServerState& state,
                      lva::audio::PcmRingBuffer& mic_ring,
                      lva::audio::WakeWordEngine& engine,
-                     lva::audio::IAudioPlayer* announce_player)
+                     lva::audio::IAudioPlayer* announce_player,
+                     lva::tr::LedController& leds)
     : state_(state), mic_ring_(mic_ring), engine_(engine),
-      announce_player_(announce_player) {}
+      announce_player_(announce_player), leds_(leds) {}
 
 Satellite::~Satellite() = default;
 
@@ -87,7 +88,7 @@ void Satellite::OnStopDetected() {
         continue_conversation_ = false;
         continue_listen_at_ns_.store(0, std::memory_order_relaxed);
         Unduck();
-        lva::tr::Show(lva::tr::LedState::Idle);
+        leds_.ClearTurn();
     }
 }
 
@@ -127,7 +128,7 @@ void Satellite::StartPipeline(const std::string& wake_word_phrase) {
     tts_played_            = false;
     continue_conversation_ = false;
 
-    lva::tr::Show(lva::tr::LedState::Listening);
+    leds_.SetTurn(lva::tr::LedState::Listening);
     Duck();
 
     if (announce_player_ != nullptr) {
@@ -203,7 +204,7 @@ void Satellite::BeginListening() {
         std::int16_t scratch[1024];
         while (mic_ring_.Read(scratch, 1024) > 0) {}
     }
-    lva::tr::Show(lva::tr::LedState::Listening);
+    leds_.SetTurn(lva::tr::LedState::Listening);
     is_streaming_audio_ = true;
     pipeline_active_    = true;
     if (state_.broadcast) {
@@ -229,7 +230,7 @@ void Satellite::PlayTts() {
 
     tts_played_ = true;
     LVA_LOGI(kTag, "playing TTS: %s", tts_url_.c_str());
-    lva::tr::Show(lva::tr::LedState::Speaking);
+    leds_.SetTurn(lva::tr::LedState::Speaking);
 
     auto broadcast = state_.broadcast;
     announce_player_->Play(tts_url_, [this, broadcast]() {
@@ -244,7 +245,7 @@ void Satellite::PlayTts() {
             // TTS has finished playing; show Thinking during the settle delay
             // instead of leaving the LED on Speaking. BeginListening() will
             // switch to Listening once the mic actually opens.
-            lva::tr::Show(lva::tr::LedState::Thinking);
+            leds_.SetTurn(lva::tr::LedState::Thinking);
             const auto now_ns =
                 std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now().time_since_epoch())
@@ -254,7 +255,7 @@ void Satellite::PlayTts() {
                 std::memory_order_release);
         } else {
             pipeline_active_ = false;
-            lva::tr::Show(lva::tr::LedState::Idle);
+            leds_.ClearTurn();
             Unduck();
         }
     });
@@ -286,7 +287,7 @@ void Satellite::PlayAnnounce(const std::string& media_id,
                              / 1'000'000));
                 // Show Thinking during the settle delay; BeginListening()
                 // switches to Listening when the mic opens.
-                lva::tr::Show(lva::tr::LedState::Thinking);
+                leds_.SetTurn(lva::tr::LedState::Thinking);
                 const auto now_ns =
                     std::chrono::duration_cast<std::chrono::nanoseconds>(
                         std::chrono::steady_clock::now().time_since_epoch())
@@ -296,7 +297,7 @@ void Satellite::PlayAnnounce(const std::string& media_id,
                     std::memory_order_release);
             } else {
                 pipeline_active_ = false;
-                lva::tr::Show(lva::tr::LedState::Idle);
+                leds_.ClearTurn();
                 Unduck();
             }
         });
@@ -337,7 +338,7 @@ void Satellite::StartTimerRing() {
         });
     }
     Duck();
-    lva::tr::Show(lva::tr::LedState::Speaking);
+    leds_.SetTurn(lva::tr::LedState::Speaking);
 }
 
 void Satellite::StopTimerRing() {
@@ -347,7 +348,7 @@ void Satellite::StopTimerRing() {
         announce_player_->Stop();
     }
     Unduck();
-    lva::tr::Show(lva::tr::LedState::Idle);
+    leds_.ClearTurn();
 }
 
 void Satellite::OnTimerSoundEof() {
@@ -392,7 +393,7 @@ void Satellite::OnVoiceEvent(
             LVA_LOGW(kTag, "voice ERROR event: code=%s message=%s",
                      code.empty()    ? "(none)" : code.c_str(),
                      message.empty() ? "(none)" : message.c_str());
-            lva::tr::Show(lva::tr::LedState::Error);
+            leds_.SetTurn(lva::tr::LedState::Error);
             StopAudioStreaming();
             pipeline_active_       = false;
             continue_conversation_ = false;
@@ -405,7 +406,7 @@ void Satellite::OnVoiceEvent(
         case kEvtSttEnd:
             LVA_LOGD(kTag, "STT_(VAD_)END — stop streaming");
             StopAudioStreaming();
-            lva::tr::Show(lva::tr::LedState::Thinking);
+            leds_.SetTurn(lva::tr::LedState::Thinking);
             break;
 
         case kEvtIntentStart:
@@ -456,10 +457,10 @@ void Satellite::OnVoiceEvent(
             StopAudioStreaming();
             if (!tts_played_) {
                 if (continue_conversation_) {
-                    lva::tr::Show(lva::tr::LedState::Listening);
+                    leds_.SetTurn(lva::tr::LedState::Listening);
                 } else {
                     pipeline_active_ = false;
-                    lva::tr::Show(lva::tr::LedState::Idle);
+                    leds_.ClearTurn();
                     Unduck();
                 }
             }
@@ -490,7 +491,7 @@ void Satellite::OnLoopTick() {
             if (state_.muted.load(std::memory_order_relaxed)) {
                 LVA_LOGD(kTag, "continued conversation skipped: muted");
                 pipeline_active_ = false;
-                lva::tr::Show(lva::tr::LedState::Idle);
+                leds_.ClearTurn();
                 Unduck();
             } else {
                 LVA_LOGI(kTag, "settle delay elapsed — listening");
@@ -511,7 +512,7 @@ void Satellite::OnDisconnected() {
     continue_conversation_ = false;
     continue_listen_at_ns_.store(0, std::memory_order_relaxed);
     Unduck();
-    lva::tr::Show(lva::tr::LedState::Idle);
+    leds_.ClearTurn();
     if (announce_player_) announce_player_->Stop();
     if (state_.music_player) state_.music_player->Stop();
     tts_url_.clear();
@@ -526,7 +527,7 @@ void Satellite::OnMuted() {
         pipeline_active_       = false;
         continue_conversation_ = false;
         Unduck();
-        lva::tr::Show(lva::tr::LedState::Idle);
+        leds_.ClearTurn();
     }
 }
 

@@ -44,10 +44,12 @@
 #include "entities/UpdateEntity.h"
 #include "protocol/ApiServer.h"
 #include "protocol/MdnsPublisher.h"
+#include "protocol/MessageRegistry.h"
 #include "satellite/Satellite.h"
 #include "state/Preferences.h"
 #include "state/ServerState.h"
 #include "tr/HomeButton.h"
+#include "tr/LedController.h"
 #include "tr/MicMuteGpio.h"
 #include "tr/SoundConfWatcher.h"
 #include "tr/Supervisor.h"
@@ -55,6 +57,8 @@
 #include "tr/SysInfo.h"
 #include "tr/SystemVolume.h"
 #include "util/Log.h"
+
+#include "api.pb.h"
 
 namespace {
 
@@ -334,8 +338,14 @@ int main(int argc, char** argv) {
              static_cast<unsigned>(cli.port),
              cli.preferences_file.c_str());
 
+    auto led_controller = std::make_unique<lva::tr::LedController>();
+    led_controller->SetBase(lva::tr::LedState::Ready);
+
     // Build shared ServerState. Owned by main; ApiServer holds a ref.
     lva::state::ServerState state;
+    state.on_volume_changed = [leds = led_controller.get()] {
+        leds->ShowVolumeChanged();
+    };
     state.name             = cli.device_name;
     state.friendly_name    = cli.device_name;
     {
@@ -381,8 +391,16 @@ int main(int argc, char** argv) {
     state.continue_conversation_delay_ns =
         static_cast<std::int64_t>(cli.continue_conversation_delay * 1e9);
 
-    auto mic_mute_gpio = std::make_unique<lva::tr::MicMuteGpio>(state);
-    state.mic_mute_gpio = mic_mute_gpio.get();
+    auto mic_mute_gpio = std::make_unique<lva::tr::MicMuteGpio>(
+        [&state](bool muted, lva::tr::MuteChangeSource source) {
+            state.PersistMuted(muted);
+            if (source == lva::tr::MuteChangeSource::Hardware) {
+                state.PlayMuteToggleSound(muted);
+            }
+        });
+    state.sync_mute_hardware = [gpio = mic_mute_gpio.get()](bool muted) {
+        gpio->SyncToHardware(muted);
+    };
     if (mic_mute_gpio->Available()) {
         mic_mute_gpio->ReadAndApplyOnce();
     }
@@ -764,7 +782,8 @@ int main(int argc, char** argv) {
 
     // Voice satellite state machine.
     auto satellite = std::make_unique<lva::satellite::Satellite>(
-        state, *satellite_ring, *wakeword_engine, announce_player.get());
+        state, *satellite_ring, *wakeword_engine, announce_player.get(),
+        *led_controller);
     state.satellite = satellite.get();
 
     // When HA disconnects, reset satellite state.
@@ -818,6 +837,7 @@ int main(int argc, char** argv) {
         if (::timerfd_settime(satellite_tick_fd, 0, &ts, nullptr) == 0) {
             server.AddAuxFd(satellite_tick_fd,
                             [&satellite, &mic_mute_gpio, &sound_watcher,
+                             &led_controller,
                              update_entity_ptr, satellite_tick_fd] {
                 std::uint64_t expirations = 0;
                 while (::read(satellite_tick_fd,
@@ -826,6 +846,7 @@ int main(int argc, char** argv) {
                 }
                 satellite->OnLoopTick();
                 mic_mute_gpio->Poll();
+                led_controller->Poll();
                 sound_watcher->Poll();
                 if (update_entity_ptr) update_entity_ptr->OnPeriodicTick();
             });
@@ -838,9 +859,30 @@ int main(int argc, char** argv) {
     }
 
     lva::tr::HomeButton::Options home_btn_opts;
-    home_btn_opts.entity_key = home_button_entity_key;
     auto home_button = std::make_unique<lva::tr::HomeButton>(
-        home_btn_opts, state);
+        home_btn_opts,
+        [&state, home_button_entity_key](lva::tr::HomeButtonPress press) {
+            const char* event_type = nullptr;
+            switch (press) {
+                case lva::tr::HomeButtonPress::Single:
+                    event_type = "single_press";
+                    break;
+                case lva::tr::HomeButtonPress::Double:
+                    event_type = "double_press";
+                    break;
+                case lva::tr::HomeButtonPress::Triple:
+                    event_type = "triple_press";
+                    break;
+            }
+            if (!state.broadcast) {
+                LVA_LOGW("home_btn", "no broadcast hook; click dropped");
+                return;
+            }
+            ::EventResponse response;
+            response.set_key(home_button_entity_key);
+            response.set_event_type(event_type);
+            state.broadcast(lva::proto::kIdEventResponse, response);
+        });
     {
         const int hb_fd = home_button->Start();
         if (hb_fd >= 0) {

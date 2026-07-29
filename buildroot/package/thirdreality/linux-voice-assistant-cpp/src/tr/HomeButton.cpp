@@ -8,12 +8,9 @@
 
 #include <chrono>
 #include <cstring>
+#include <utility>
 
-#include "protocol/MessageRegistry.h"
-#include "state/ServerState.h"
 #include "util/Log.h"
-
-#include "api.pb.h"
 
 namespace lva::tr {
 
@@ -27,8 +24,8 @@ constexpr int    kPollTimeoutMs      = 100;
 
 }  // namespace
 
-HomeButton::HomeButton(const Options& opts, lva::state::ServerState& state)
-    : opts_(opts), state_(state) {}
+HomeButton::HomeButton(const Options& opts, PressCallback on_press)
+    : opts_(opts), on_press_(std::move(on_press)) {}
 
 HomeButton::~HomeButton() { Stop(); }
 
@@ -41,8 +38,7 @@ int HomeButton::Start() {
     }
     stop_requested_.store(false, std::memory_order_relaxed);
     thread_ = std::thread([this] { ThreadLoop(); });
-    LVA_LOGI(kTag, "started (input=%s, entity_key=%u)",
-             opts_.input_device.c_str(), opts_.entity_key);
+    LVA_LOGI(kTag, "started (input=%s)", opts_.input_device.c_str());
     return event_fd_;
 }
 
@@ -64,21 +60,15 @@ void HomeButton::OnMainLoopWake() {
     const int clicks = pending_clicks_.exchange(0, std::memory_order_acq_rel);
     if (clicks <= 0) return;
 
-    const char* event_type = nullptr;
-    if      (clicks == 1) event_type = "single_press";
-    else if (clicks == 2) event_type = "double_press";
-    else                   event_type = "triple_press";  // ≥3
+    const HomeButtonPress press = ClassifyClicks(clicks);
+    LVA_LOGI(kTag, "%d click(s)", clicks);
+    if (on_press_) on_press_(press);
+}
 
-    if (!state_.broadcast) {
-        LVA_LOGW(kTag, "no broadcast hook; click event dropped");
-        return;
-    }
-    LVA_LOGI(kTag, "%d click(s) -> %s", clicks, event_type);
-
-    ::EventResponse resp;
-    resp.set_key(opts_.entity_key);
-    resp.set_event_type(event_type);
-    state_.broadcast(lva::proto::kIdEventResponse, resp);
+HomeButtonPress HomeButton::ClassifyClicks(int clicks) {
+    if (clicks <= 1) return HomeButtonPress::Single;
+    if (clicks == 2) return HomeButtonPress::Double;
+    return HomeButtonPress::Triple;
 }
 
 void HomeButton::ThreadLoop() {
@@ -163,7 +153,7 @@ void HomeButton::ThreadLoop() {
     }
 
     ::close(fd);
-    LVA_LOGD(kTag, "thread exiting");
+    LVA_LOGD(kTag, "%s", "thread exiting");
 }
 
 }  // namespace lva::tr

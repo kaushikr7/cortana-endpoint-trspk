@@ -7,9 +7,8 @@
 #include <cerrno>
 #include <cstring>
 #include <fstream>
+#include <utility>
 
-#include "state/ServerState.h"
-#include "tr/LedRing.h"
 #include "util/Log.h"
 
 namespace lva::tr {
@@ -29,9 +28,9 @@ int MutedToGpio(bool muted) noexcept {
 
 }  // namespace
 
-MicMuteGpio::MicMuteGpio(lva::state::ServerState& state,
+MicMuteGpio::MicMuteGpio(ChangeCallback on_change,
                          std::string gpio_path)
-    : state_(state), gpio_path_(std::move(gpio_path)) {
+    : on_change_(std::move(on_change)), gpio_path_(std::move(gpio_path)) {
     struct stat st{};
     if (::stat(gpio_path_.c_str(), &st) == 0) {
         available_ = true;
@@ -59,7 +58,7 @@ bool MicMuteGpio::ReadAndApplyOnce() {
     if (!ReadRaw(&v)) return false;
     last_value_ = v;
     const bool muted = GpioToMuted(v);
-    state_.PersistMuted(muted);
+    if (on_change_) on_change_(muted, MuteChangeSource::InitialRead);
     return true;
 }
 
@@ -80,9 +79,7 @@ void MicMuteGpio::Poll() {
     last_value_ = v;
     const bool muted = GpioToMuted(v);
     LVA_LOGI(kTag, "hardware change: muted=%s", muted ? "true" : "false");
-    state_.PersistMuted(muted);
-    state_.PlayMuteToggleSound(muted);
-    Show(muted ? LedState::Muted : LedState::Unmuted);
+    if (on_change_) on_change_(muted, MuteChangeSource::Hardware);
 }
 
 void MicMuteGpio::SyncToHardware(bool muted) {
@@ -104,7 +101,6 @@ void MicMuteGpio::SyncToHardware(bool muted) {
     last_value_ = target;
     LVA_LOGI(kTag, "GPIO -> %d (muted=%s)", target,
              muted ? "true" : "false");
-    Show(muted ? LedState::Muted : LedState::Unmuted);
 }
 
 }  // namespace lva::tr

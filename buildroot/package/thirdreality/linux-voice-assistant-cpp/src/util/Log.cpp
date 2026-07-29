@@ -48,7 +48,7 @@ void Write(Level level, std::string_view tag, std::string_view message) noexcept
     localtime_r(&t, &tm);
 #endif
 
-    char ts[32];
+    char ts[96];
     std::snprintf(ts, sizeof(ts), "%04d-%02d-%02d %02d:%02d:%02d.%06ld",
                   tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
                   tm.tm_hour, tm.tm_min, tm.tm_sec,

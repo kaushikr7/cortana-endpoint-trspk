@@ -16,7 +16,7 @@
 
 namespace lva::audio    { class AudioCapture; class WebRtcProcessor; class IAudioPlayer; class WakeWordEngine; }
 namespace lva::satellite { class Satellite; }
-namespace lva::tr       { class MicMuteGpio; class Supervisor; }
+namespace lva::tr       { class Supervisor; }
 namespace lva::entities { class MediaPlayerEntity; class MuteSwitchEntity; }
 
 namespace lva::state {
@@ -50,8 +50,6 @@ class ServerState {
     // Wake-word engine — used to push sensitivity changes at runtime.
     class ::lva::audio::WakeWordEngine* wakeword_engine = nullptr;
 
-    class ::lva::tr::MicMuteGpio* mic_mute_gpio = nullptr;
-
     class ::lva::entities::MediaPlayerEntity* media_player_entity = nullptr;
 
     class ::lva::entities::MuteSwitchEntity* mute_switch_entity = nullptr;
@@ -72,6 +70,9 @@ class ServerState {
     ConnectionEventFn on_client_authenticated;
 
     ConnectionEventFn on_client_disconnected;
+
+    std::function<void(bool)> sync_mute_hardware;
+    std::function<void()> on_volume_changed;
 
     std::vector<std::unique_ptr<entities::Entity>> entities;
 

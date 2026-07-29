@@ -3,21 +3,23 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <thread>
 
-namespace lva::state { class ServerState; }
-
 namespace lva::tr {
+
+enum class HomeButtonPress { Single, Double, Triple };
 
 class HomeButton {
    public:
+    using PressCallback = std::function<void(HomeButtonPress)>;
+
     struct Options {
         std::string input_device  = "/dev/input/event0";
-        std::uint32_t entity_key  = 0;
     };
 
-    HomeButton(const Options& opts, lva::state::ServerState& state);
+    HomeButton(const Options& opts, PressCallback on_press);
     ~HomeButton();
 
     HomeButton(const HomeButton&)            = delete;
@@ -29,11 +31,13 @@ class HomeButton {
 
     void Stop();
 
+    static HomeButtonPress ClassifyClicks(int clicks);
+
    private:
     void ThreadLoop();
 
     Options                 opts_;
-    lva::state::ServerState& state_;
+    PressCallback           on_press_;
 
     int                     event_fd_       = -1;   // worker → main
     std::thread             thread_;

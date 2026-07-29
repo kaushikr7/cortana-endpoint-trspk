@@ -59,6 +59,12 @@ No host dependencies required other than Docker.
 ./go --docker trspk rebuild <package>  # Rebuild a single package in Docker
 ```
 
+Run the host-only physical-control tests without building firmware:
+
+```bash
+./script/test_device_controls.sh
+```
+
 ### Native Build
 
 Requires:

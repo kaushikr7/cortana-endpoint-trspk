@@ -3,15 +3,19 @@
 
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <string>
-
-namespace lva::state { class ServerState; }
 
 namespace lva::tr {
 
+enum class MuteChangeSource { InitialRead, Hardware };
+
 class MicMuteGpio {
    public:
-    explicit MicMuteGpio(lva::state::ServerState& state,
+    using ChangeCallback =
+        std::function<void(bool muted, MuteChangeSource source)>;
+
+    explicit MicMuteGpio(ChangeCallback on_change,
                          std::string gpio_path = "/sys/class/gpio/gpio438/value");
 
     void Poll();
@@ -25,7 +29,7 @@ class MicMuteGpio {
    private:
     bool ReadRaw(int* out_value);
 
-    lva::state::ServerState&  state_;
+    ChangeCallback            on_change_;
     std::string               gpio_path_;
     bool                      available_  = false;
     int                       last_value_ = -1;  // last GPIO digit seen
