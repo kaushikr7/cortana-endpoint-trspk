@@ -881,6 +881,12 @@ mute, bounds, scripted backpressure, and reconnect isolation.
 
 - Verify 16 kHz mono PCM16, frame rate, bytes per second, dropped frames, AEC
   reference, CPU, memory, mute, Wi-Fi loss, and reconnect on the speaker.
+- Record representative speech at realistic near- and far-field distances and
+  inspect PCM RMS, peaks, clipping, and server recognition reliability. Confirm
+  the WebRTC digital gain provides adequate microphone sensitivity; tune or
+  expose it as configuration based on measurements rather than relying on the
+  existing `sound.json`/`amixer` microphone-gain control, which is not yet
+  proven effective on this hardware.
 
 #### T3.4 Remove all local wake code/assets — Medium
 
