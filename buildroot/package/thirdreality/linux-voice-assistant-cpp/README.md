@@ -13,12 +13,14 @@ The current runtime provides:
 - centralized ring LED state for boot, connection, turn, and blocked errors;
 - local home-button and dedicated mute-button handling;
 - continuous ALSA microphone capture with hardware-loopback AEC and bounded
-  queue/timing metrics.
+  queue/timing metrics;
+- exact 20 ms PCM16 microphone framing with generation, mute, reconnect, and
+  backpressure discard rules.
 
 ESPHome framing, protobuf, TCP port 6053, Home Assistant entities, mDNS
 discovery, the HA satellite state machine, and the legacy supervisor/OTA HTTP
-surface have been removed. The local PCM queue is connected to WSS and playback
-in later implementation tickets.
+surface have been removed. Cortana response playback is connected in later
+implementation tickets.
 
 ## Runtime
 

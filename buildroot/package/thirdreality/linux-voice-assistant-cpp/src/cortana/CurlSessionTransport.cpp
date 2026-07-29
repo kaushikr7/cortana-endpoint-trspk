@@ -98,6 +98,10 @@ public:
         SendFrame(payload, CURLWS_TEXT);
     }
 
+    void SendBinary(std::string_view payload) override {
+        SendFrame(payload, CURLWS_BINARY);
+    }
+
     std::optional<WebSocketMessage> Receive(
         std::chrono::milliseconds timeout) override {
         const auto deadline = SteadyClock::now() + timeout;

@@ -22,6 +22,7 @@
 #include <nlohmann/json.hpp>
 
 #include "audio/CapturePipeline.h"
+#include "audio/MicrophoneIngress.h"
 #include "config/EndpointConfig.h"
 #include "cortana/CurlSessionTransport.h"
 #include "cortana/Protocol.h"
@@ -383,12 +384,22 @@ int main(int argc, char** argv) {
         LVA_LOGE(kTag, "%s", "continuous microphone capture is unavailable");
         leds.SetSystem(lva::tr::LedState::Error);
     }
+    lva::audio::MicrophoneIngress ingress(
+        capture.Queue(),
+        [&session](
+            std::uint64_t generation,
+            const lva::audio::MicrophoneIngress::Frame& frame) {
+            if (session.EnqueueAudioFrame(generation, frame)) return true;
+            session.DiscardAudioFrames();
+            return false;
+        });
 
     bool muted = false;
     lva::tr::MicMuteGpio mute_gpio(
         [&session, &capture, &muted](
             bool new_muted, lva::tr::MuteChangeSource) {
             muted = new_muted;
+            session.SetMicrophoneMuted(new_muted);
             if (new_muted) (void)capture.DiscardQueued();
             (void)session.EnqueueText(
                 lva::cortana::SerializeMuteChanged(new_muted));
@@ -427,7 +438,7 @@ int main(int argc, char** argv) {
                 .events = POLLIN,
                 .revents = 0,
             };
-            const int result = ::poll(&descriptor, 1, 50);
+            const int result = ::poll(&descriptor, 1, 10);
             if (result > 0 && (descriptor.revents & POLLIN) != 0) {
                 home_button.OnMainLoopWake();
             } else if (result < 0 && errno != EINTR) {
@@ -435,18 +446,16 @@ int main(int argc, char** argv) {
                          std::strerror(errno));
             }
         } else {
-            std::this_thread::sleep_for(50ms);
+            std::this_thread::sleep_for(10ms);
         }
 
         mute_gpio.Poll();
         leds.Poll();
-        // T3.2 replaces this deliberate drain with generation-aware 20 ms
-        // WSS frame transport. Never retain stale microphone latency.
-        (void)capture.DiscardQueued();
         while (session.TryPopEvent().has_value()) {
         }
 
         const auto snapshot = session.Snapshot();
+        (void)ingress.Pump(snapshot, muted);
         ApplyLedState(snapshot, leds);
         if (snapshot.phase != logged_phase) {
             logged_phase = snapshot.phase;
@@ -466,11 +475,13 @@ int main(int argc, char** argv) {
         if (now >= next_capture_metrics) {
             next_capture_metrics = now + 30s;
             const auto metrics = capture.GetMetrics();
+            const auto ingress_metrics = ingress.GetMetrics();
             LVA_LOGI(kTag,
                      "capture running=%d periods=%llu samples=%llu "
                      "reference_periods=%llu queue=%zu/%zu high=%zu "
                      "overrun=%llu discarded=%llu recoveries=%llu "
-                     "short_reads=%llu processing_failures=%llu max_us=%llu",
+                     "short_reads=%llu processing_failures=%llu max_us=%llu "
+                     "frames_enqueued=%llu frames_rejected=%llu",
                      metrics.running ? 1 : 0,
                      static_cast<unsigned long long>(metrics.periods_captured),
                      static_cast<unsigned long long>(metrics.samples_captured),
@@ -487,7 +498,11 @@ int main(int argc, char** argv) {
                      static_cast<unsigned long long>(
                          metrics.processing_failures),
                      static_cast<unsigned long long>(
-                         metrics.maximum_processing_us));
+                         metrics.maximum_processing_us),
+                     static_cast<unsigned long long>(
+                         ingress_metrics.frames_enqueued),
+                     static_cast<unsigned long long>(
+                         ingress_metrics.frames_rejected));
         }
     }
 

@@ -1,8 +1,10 @@
 #include <array>
 #include <cassert>
 #include <cstdint>
+#include <vector>
 
 #include "audio/CaptureFrame.h"
+#include "audio/MicrophoneIngress.h"
 #include "audio/PcmRingBuffer.h"
 
 namespace {
@@ -86,10 +88,84 @@ void TestBoundedQueueMetricsAndDiscard() {
     assert(metrics.samples_discarded == 8);
 }
 
+void WriteMicrophoneFrame(lva::audio::PcmRingBuffer& queue,
+                          std::int16_t first_sample) {
+    std::array<std::int16_t, 320> samples{};
+    for (std::size_t index = 0; index < samples.size(); ++index) {
+        samples[index] = static_cast<std::int16_t>(first_sample + index);
+    }
+    assert(queue.Write(samples.data(), samples.size()) == samples.size());
+}
+
+void TestIngressFramingGenerationMuteAndPressure() {
+    lva::audio::PcmRingBuffer queue(1280);
+    struct SentFrame {
+        std::uint64_t generation;
+        lva::audio::MicrophoneIngress::Frame frame;
+    };
+    std::vector<SentFrame> sent;
+    bool accept = true;
+    lva::audio::MicrophoneIngress ingress(
+        queue,
+        [&](std::uint64_t generation,
+            const lva::audio::MicrophoneIngress::Frame& frame) {
+            if (!accept) return false;
+            sent.push_back({generation, frame});
+            return true;
+        },
+        1);
+    lva::cortana::SessionSnapshot session;
+    session.phase = lva::cortana::SessionPhase::Ready;
+    session.audio_started = true;
+    session.generation = 1;
+
+    WriteMicrophoneFrame(queue, -1000);
+    assert(ingress.Pump(session, false) == 0);  // discard pre-ready audio
+    assert(queue.Size() == 0);
+
+    WriteMicrophoneFrame(queue, -320);
+    assert(ingress.Pump(session, false) == 1);
+    assert(sent.size() == 1);
+    assert(sent[0].generation == 1);
+    for (std::size_t index = 0; index < 320; ++index) {
+        const auto low = std::to_integer<std::uint8_t>(
+            sent[0].frame[index * 2]);
+        const auto high = std::to_integer<std::uint8_t>(
+            sent[0].frame[index * 2 + 1]);
+        const auto decoded = static_cast<std::int16_t>(
+            static_cast<std::uint16_t>(low) |
+            (static_cast<std::uint16_t>(high) << 8));
+        assert(decoded == static_cast<std::int16_t>(-320 + index));
+    }
+
+    WriteMicrophoneFrame(queue, 100);
+    assert(ingress.Pump(session, true) == 0);
+    assert(queue.Size() == 0);
+
+    session.generation = 2;
+    WriteMicrophoneFrame(queue, 200);
+    assert(ingress.Pump(session, false) == 0);  // generation boundary
+    WriteMicrophoneFrame(queue, 300);
+    assert(ingress.Pump(session, false) == 1);
+    assert(sent.back().generation == 2);
+
+    accept = false;
+    WriteMicrophoneFrame(queue, 400);
+    WriteMicrophoneFrame(queue, 720);
+    assert(ingress.Pump(session, false) == 0);
+    assert(queue.Size() == 0);
+    const auto metrics = ingress.GetMetrics();
+    assert(metrics.frames_assembled == 3);
+    assert(metrics.frames_enqueued == 2);
+    assert(metrics.frames_rejected == 1);
+    assert(metrics.samples_discarded == 1600);
+}
+
 }  // namespace
 
 int main() {
     TestChannelSplitAndReferenceMix();
     TestInvalidLayoutsFailClosed();
     TestBoundedQueueMetricsAndDiscard();
+    TestIngressFramingGenerationMuteAndPressure();
 }

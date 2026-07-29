@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <array>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -37,6 +38,11 @@ struct SessionSnapshot {
     std::size_t reconnect_attempt = 0;
     std::size_t queued_commands = 0;
     std::uint64_t dropped_commands = 0;
+    bool audio_started = false;
+    bool microphone_muted = false;
+    std::size_t queued_audio_frames = 0;
+    std::uint64_t audio_frames_sent = 0;
+    std::uint64_t dropped_audio_frames = 0;
 };
 
 struct SessionEvent {
@@ -49,9 +55,10 @@ public:
     struct Options {
         std::size_t maximum_queued_commands = 32;
         std::size_t maximum_queued_events = 32;
+        std::size_t maximum_queued_audio_frames = 8;
         std::size_t maximum_command_bytes = 64 * 1024;
         std::chrono::milliseconds handshake_timeout{8000};
-        std::chrono::milliseconds receive_poll{50};
+        std::chrono::milliseconds receive_poll{10};
         std::chrono::milliseconds ping_interval{15000};
         std::chrono::milliseconds ping_timeout{10000};
         std::chrono::milliseconds stable_connection_time{60000};
@@ -81,6 +88,11 @@ public:
     // This is the only network-facing entry point for audio/control owners.
     // It never performs I/O and rejects stale, oversized, or excess work.
     bool EnqueueText(std::string payload);
+    bool EnqueueAudioFrame(
+        std::uint64_t generation,
+        const std::array<std::byte, kMicrophoneFrameBytes>& frame);
+    void SetMicrophoneMuted(bool muted);
+    void DiscardAudioFrames();
     std::optional<SessionEvent> TryPopEvent();
 
     SessionSnapshot Snapshot() const;
@@ -101,6 +113,7 @@ private:
                   const DeviceTicket& ticket);
     void PushEvent(ServerEvent event);
     void DropQueuedCommands();
+    void DropQueuedAudioLocked();
     bool WaitForStop(std::chrono::milliseconds duration);
     bool StopRequested() const;
 
@@ -114,6 +127,7 @@ private:
     mutable std::condition_variable condition_;
     SessionSnapshot snapshot_;
     std::deque<std::string> commands_;
+    std::deque<std::array<std::byte, kMicrophoneFrameBytes>> audio_frames_;
     std::deque<SessionEvent> events_;
     bool stop_requested_ = false;
     std::thread worker_;

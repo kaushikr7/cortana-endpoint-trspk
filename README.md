@@ -19,8 +19,9 @@ The retained `linux-voice-assistant-cpp` binary name now hosts:
 
 There is no ESPHome listener, Home Assistant discovery, protobuf control
 plane, Sendspin client, or supervisor HTTP API. Continuous ALSA capture and
-hardware-loopback AEC now feed a bounded local PCM queue; WSS microphone
-transport and Cortana playback follow in subsequent plan phases.
+hardware-loopback AEC feed generation-tagged 20 ms PCM frames over the bounded
+WSS session transport. Cortana response playback follows in a subsequent plan
+phase.
 
 ## Repository setup
 

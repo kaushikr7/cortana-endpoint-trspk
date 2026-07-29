@@ -865,6 +865,18 @@ latency without coupling capture to any local wake scanner.
   disconnect, reconnect, or overload rather than accumulating latency.
 - Test queue bounds, ordering, reconnect generation changes, and backpressure.
 
+Implementation paths are `src/audio/MicrophoneIngress.{h,cpp}` and the bounded
+audio additions to `cortana/SessionClient`. After `session.ready`, the network
+owner sends `audio.start` before exposing `audio_started`; only then can the
+main-loop ingress consume capture data. It reads exactly two 160-sample ALSA
+periods, packs 320 PCM16 samples as 640 explicit little-endian bytes, and tags
+the frame with the active session generation. The session worker is the only
+code that performs binary WSS sends. Capture and session queues are both
+bounded; mute, non-ready state, generation change, send failure, or queue
+pressure discards pending audio instead of carrying latency across state
+boundaries. Host tests cover byte ordering, exact framing, handshake ordering,
+mute, bounds, scripted backpressure, and reconnect isolation.
+
 #### T3.3 Real-device ingress acceptance — Medium
 
 - Verify 16 kHz mono PCM16, frame rate, bytes per second, dropped frames, AEC

@@ -31,6 +31,8 @@ struct ConnectionPlan {
     std::optional<int> close_after_ready;
     bool block_first_command = false;
     bool mismatched_ready = false;
+    bool block_first_binary = false;
+    bool fail_first_binary = false;
 };
 
 struct ConnectionState {
@@ -41,8 +43,12 @@ struct ConnectionState {
     std::condition_variable condition;
     std::deque<WebSocketMessage> inbound;
     std::vector<Json> sent;
+    std::vector<std::string> binary_frames;
     bool command_blocked = false;
     bool release_command = false;
+    bool binary_blocked = false;
+    bool release_binary = false;
+    bool binary_failed = false;
     std::optional<std::pair<int, std::string>> client_close;
 };
 
@@ -127,6 +133,29 @@ public:
                 return state_->release_command;
             });
         }
+    }
+
+    void SendBinary(std::string_view payload) override {
+        std::unique_lock lock(state_->mutex);
+        if (state_->plan.fail_first_binary && !state_->binary_failed) {
+            state_->binary_blocked = true;
+            state_->condition.notify_all();
+            state_->condition.wait(lock, [this] {
+                return state_->release_binary;
+            });
+            state_->binary_failed = true;
+            throw lva::cortana::SessionTransportError(
+                "scripted binary send failure");
+        }
+        if (state_->plan.block_first_binary && !state_->binary_blocked) {
+            state_->binary_blocked = true;
+            state_->condition.notify_all();
+            state_->condition.wait(lock, [this] {
+                return state_->release_binary;
+            });
+        }
+        state_->binary_frames.emplace_back(payload);
+        state_->condition.notify_all();
     }
 
     std::optional<WebSocketMessage> Receive(
@@ -261,19 +290,104 @@ void TestHandshakeAndEndpoint() {
     auto client = MakeClient(dependencies);
     client->Start();
     assert(client->WaitForPhase(SessionPhase::Ready, 1s));
+    assert(WaitUntil([&] { return client->Snapshot().audio_started; }));
     const auto state = dependencies->State(0);
     assert(state);
     {
         std::lock_guard lock(state->mutex);
-        assert(state->sent.size() >= 2);
+        assert(state->sent.size() >= 3);
         assert(state->sent[0].at("type") == "session.authenticate");
         assert(state->sent[1].at("type") == "session.capabilities");
+        assert(state->sent[2].at("type") == "audio.start");
     }
     assert(dependencies->Urls() == std::vector<std::string>{
         "wss://cortana.example/api/v1/voice/session"});
     const auto event = client->TryPopEvent();
     assert(event.has_value());
     assert(std::holds_alternative<lva::cortana::SessionReady>(event->event));
+    client->Stop();
+}
+
+void TestAudioGenerationMuteAndBackpressure() {
+    auto options = FastOptions();
+    options.maximum_queued_audio_frames = 2;
+    auto dependencies = std::make_shared<FakeDependencies>(
+        std::vector<ConnectionPlan>{{
+            std::nullopt, false, false, true, false}});
+    auto client = MakeClient(dependencies, options);
+    client->Start();
+    assert(client->WaitForPhase(SessionPhase::Ready, 1s));
+    assert(WaitUntil([&] { return client->Snapshot().audio_started; }));
+    const auto generation = client->Snapshot().generation;
+    std::array<std::byte, lva::cortana::kMicrophoneFrameBytes> frame{};
+    frame[0] = std::byte{0x11};
+    assert(!client->EnqueueAudioFrame(generation + 1, frame));
+    assert(client->EnqueueAudioFrame(generation, frame));
+
+    const auto state = dependencies->State(0);
+    assert(state);
+    assert(WaitUntil([&] {
+        std::lock_guard lock(state->mutex);
+        return state->binary_blocked;
+    }));
+    assert(client->EnqueueAudioFrame(generation, frame));
+    assert(client->EnqueueAudioFrame(generation, frame));
+    assert(!client->EnqueueAudioFrame(generation, frame));
+    client->SetMicrophoneMuted(true);
+    assert(!client->EnqueueAudioFrame(generation, frame));
+    assert(client->Snapshot().queued_audio_frames == 0);
+    {
+        std::lock_guard lock(state->mutex);
+        state->release_binary = true;
+        state->condition.notify_all();
+    }
+    client->Stop();
+}
+
+void TestReconnectDropsOldAudioGeneration() {
+    auto dependencies = std::make_shared<FakeDependencies>(
+        std::vector<ConnectionPlan>{
+            {std::nullopt, false, false, false, true}, {}});
+    auto client = MakeClient(dependencies);
+    client->Start();
+    assert(client->WaitForPhase(SessionPhase::Ready, 1s));
+    assert(WaitUntil([&] { return client->Snapshot().audio_started; }));
+    const auto first_generation = client->Snapshot().generation;
+    std::array<std::byte, lva::cortana::kMicrophoneFrameBytes> frame{};
+    frame[0] = std::byte{0x22};
+    assert(client->EnqueueAudioFrame(first_generation, frame));
+    const auto first = dependencies->State(0);
+    assert(first);
+    assert(WaitUntil([&] {
+        std::lock_guard lock(first->mutex);
+        return first->binary_blocked;
+    }));
+    assert(client->EnqueueAudioFrame(first_generation, frame));
+    {
+        std::lock_guard lock(first->mutex);
+        first->release_binary = true;
+        first->condition.notify_all();
+    }
+    assert(WaitUntil([&] {
+        return client->Snapshot().generation > first_generation &&
+            client->Snapshot().phase == SessionPhase::Ready &&
+            client->Snapshot().audio_started;
+    }));
+    const auto second = dependencies->State(1);
+    assert(second);
+    std::this_thread::sleep_for(20ms);
+    {
+        std::lock_guard lock(second->mutex);
+        assert(second->binary_frames.empty());
+    }
+    assert(!client->EnqueueAudioFrame(first_generation, frame));
+    frame[0] = std::byte{0x33};
+    assert(client->EnqueueAudioFrame(
+        client->Snapshot().generation, frame));
+    assert(WaitUntil([&] {
+        std::lock_guard lock(second->mutex);
+        return second->binary_frames.size() == 1;
+    }));
     client->Stop();
 }
 
@@ -391,6 +505,8 @@ void TestBackoffAndUrlValidation() {
 
 int main() {
     TestHandshakeAndEndpoint();
+    TestAudioGenerationMuteAndBackpressure();
+    TestReconnectDropsOldAudioGeneration();
     TestReconnectRefreshesTicket();
     TestReplacementCloseIsTerminal();
     TestNegotiatedIdentityMismatchIsTerminal();

@@ -31,6 +31,7 @@ public:
     virtual ~SessionTransport() = default;
 
     virtual void SendText(std::string_view payload) = 0;
+    virtual void SendBinary(std::string_view payload) = 0;
     virtual std::optional<WebSocketMessage> Receive(
         std::chrono::milliseconds timeout) = 0;
     virtual void Close(int code, std::string_view reason) noexcept = 0;

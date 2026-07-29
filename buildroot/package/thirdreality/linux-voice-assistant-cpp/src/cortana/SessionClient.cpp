@@ -95,6 +95,7 @@ SessionClient::SessionClient(
     if (!dependencies_ || !clock_ || !jitter_ ||
         options_.maximum_queued_commands == 0 ||
         options_.maximum_queued_events == 0 ||
+        options_.maximum_queued_audio_frames == 0 ||
         options_.maximum_command_bytes == 0 ||
         options_.handshake_timeout <= std::chrono::milliseconds::zero() ||
         options_.receive_poll <= std::chrono::milliseconds::zero() ||
@@ -116,6 +117,7 @@ void SessionClient::Start() {
     stop_requested_ = false;
     snapshot_ = SessionSnapshot{};
     commands_.clear();
+    audio_frames_.clear();
     events_.clear();
     worker_ = std::thread([this] { Run(); });
 }
@@ -136,6 +138,7 @@ void SessionClient::Stop() {
         snapshot_.phase = SessionPhase::Stopped;
         snapshot_.detail.clear();
         snapshot_.session_id.clear();
+        snapshot_.audio_started = false;
     }
     condition_.notify_all();
 }
@@ -152,6 +155,35 @@ bool SessionClient::EnqueueText(std::string payload) {
     snapshot_.queued_commands = commands_.size();
     condition_.notify_all();
     return true;
+}
+
+bool SessionClient::EnqueueAudioFrame(
+    std::uint64_t generation,
+    const std::array<std::byte, kMicrophoneFrameBytes>& frame) {
+    std::lock_guard lock(mutex_);
+    if (snapshot_.phase != SessionPhase::Ready ||
+        !snapshot_.audio_started || snapshot_.microphone_muted ||
+        generation != snapshot_.generation ||
+        audio_frames_.size() >= options_.maximum_queued_audio_frames) {
+        ++snapshot_.dropped_audio_frames;
+        return false;
+    }
+    audio_frames_.push_back(frame);
+    snapshot_.queued_audio_frames = audio_frames_.size();
+    condition_.notify_all();
+    return true;
+}
+
+void SessionClient::SetMicrophoneMuted(bool muted) {
+    std::lock_guard lock(mutex_);
+    snapshot_.microphone_muted = muted;
+    if (muted) DropQueuedAudioLocked();
+    condition_.notify_all();
+}
+
+void SessionClient::DiscardAudioFrames() {
+    std::lock_guard lock(mutex_);
+    DropQueuedAudioLocked();
 }
 
 std::optional<SessionEvent> SessionClient::TryPopEvent() {
@@ -285,6 +317,42 @@ void SessionClient::RunConnection(const DeviceTicket& ticket,
                 }
             }
             if (command.has_value()) transport.SendText(*command);
+
+            for (int frame_index = 0; frame_index < 4; ++frame_index) {
+                std::optional<std::array<std::byte, kMicrophoneFrameBytes>>
+                    audio_frame;
+                {
+                    std::lock_guard lock(mutex_);
+                    if (snapshot_.microphone_muted ||
+                        !snapshot_.audio_started || audio_frames_.empty()) {
+                        break;
+                    }
+                    audio_frame = std::move(audio_frames_.front());
+                    audio_frames_.pop_front();
+                    snapshot_.queued_audio_frames = audio_frames_.size();
+                }
+                {
+                    std::lock_guard lock(mutex_);
+                    if (snapshot_.microphone_muted ||
+                        !snapshot_.audio_started) {
+                        ++snapshot_.dropped_audio_frames;
+                        continue;
+                    }
+                }
+                try {
+                    transport.SendBinary(std::string_view(
+                        reinterpret_cast<const char*>(audio_frame->data()),
+                        audio_frame->size()));
+                } catch (...) {
+                    std::lock_guard lock(mutex_);
+                    ++snapshot_.dropped_audio_frames;
+                    throw;
+                }
+                {
+                    std::lock_guard lock(mutex_);
+                    ++snapshot_.audio_frames_sent;
+                }
+            }
         }
 
         const auto before_receive = clock_();
@@ -296,6 +364,12 @@ void SessionClient::RunConnection(const DeviceTicket& ticket,
         if (pending_ping.has_value()) {
             receive_timeout = Remaining(
                 before_receive, ping_deadline, receive_timeout);
+        }
+        {
+            std::lock_guard lock(mutex_);
+            if (ready && !audio_frames_.empty()) {
+                receive_timeout = std::chrono::milliseconds::zero();
+            }
         }
 
         const auto message = transport.Receive(receive_timeout);
@@ -322,6 +396,12 @@ void SessionClient::RunConnection(const DeviceTicket& ticket,
                 if (const auto* session_ready =
                         std::get_if<SessionReady>(&event)) {
                     SetReady(*session_ready, ticket);
+                    transport.SendText(SerializeAudioStart());
+                    {
+                        std::lock_guard lock(mutex_);
+                        snapshot_.audio_started = true;
+                    }
+                    condition_.notify_all();
                     ready = true;
                     next_ping = clock_() + options_.ping_interval;
                     PushEvent(std::move(event));
@@ -392,6 +472,8 @@ void SessionClient::SetPhase(SessionPhase phase, std::string detail) {
         snapshot_.phase = phase;
         snapshot_.detail = std::move(detail);
         if (phase != SessionPhase::Ready) {
+            snapshot_.audio_started = false;
+            DropQueuedAudioLocked();
             snapshot_.session_id.clear();
             snapshot_.health = phase == SessionPhase::Backoff
                 ? Health::Reconnecting
@@ -444,6 +526,12 @@ void SessionClient::DropQueuedCommands() {
     snapshot_.dropped_commands += commands_.size();
     commands_.clear();
     snapshot_.queued_commands = 0;
+}
+
+void SessionClient::DropQueuedAudioLocked() {
+    snapshot_.dropped_audio_frames += audio_frames_.size();
+    audio_frames_.clear();
+    snapshot_.queued_audio_frames = 0;
 }
 
 bool SessionClient::WaitForStop(std::chrono::milliseconds duration) {
