@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import unittest
@@ -73,7 +74,7 @@ class AdbCommandTests(unittest.TestCase):
         )
 
     @mock.patch.object(provision.subprocess, "run")
-    def test_credential_bytes_are_stdin_not_command_arguments(
+    def test_credential_bytes_are_not_command_arguments(
         self, run: mock.Mock
     ) -> None:
         run.return_value = subprocess.CompletedProcess([], 0)
@@ -83,10 +84,15 @@ class AdbCommandTests(unittest.TestCase):
             "/data/cortana/.credential.test.tmp",
             credential,
         )
-        command = run.call_args.args[0]
-        self.assertEqual(command[:4], ["adb", "exec-out", "sh", "-c"])
-        self.assertNotIn(credential.decode(), " ".join(command))
-        self.assertEqual(run.call_args.kwargs["input"], credential)
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertEqual(commands[0][0:2], ["adb", "push"])
+        self.assertEqual(commands[0][3],
+                         "/data/cortana/.credential.test.tmp")
+        self.assertTrue(all(
+            credential.decode() not in " ".join(command)
+            for command in commands
+        ))
+        self.assertFalse(os.path.exists(commands[0][2]))
 
     @mock.patch.object(provision, "run_adb_shell")
     def test_endpoint_restart_uses_legacy_service_name(

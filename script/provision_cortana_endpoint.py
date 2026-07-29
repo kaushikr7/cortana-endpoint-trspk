@@ -6,11 +6,13 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
+import os
 import re
 import secrets
 import shlex
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from typing import Sequence
 from urllib.parse import urlsplit
@@ -119,24 +121,19 @@ def run_adb_shell(
     )
 
 
-def run_adb_exec_out(
-    target: AdbTarget,
-    command: str,
-    *,
-    input_bytes: bytes,
-) -> subprocess.CompletedProcess[bytes]:
-    """Run a non-interactive remote shell command with exact stdin/EOF.
-
-    ``adb shell`` may allocate an interactive terminal, particularly when a
-    Windows adb.exe is invoked through WSL. In that mode a remote ``cat`` can
-    echo input and wait indefinitely instead of observing EOF. ``exec-out``
-    provides a raw, non-interactive stream suitable for protected file writes.
-    """
-    return subprocess.run(
-        target.command("exec-out", "sh", "-c", command),
-        input=input_bytes,
-        check=True,
-    )
+def adb_local_path(target: AdbTarget, path: str) -> str:
+    """Translate a WSL path when invoking a Windows adb.exe."""
+    if sys.platform.startswith("linux") and target.executable.lower().endswith(
+        ".exe"
+    ):
+        completed = subprocess.run(
+            ("wslpath", "-w", path),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return completed.stdout.strip()
+    return path
 
 
 def prepare_remote_directory(target: AdbTarget) -> None:
@@ -147,11 +144,30 @@ def prepare_remote_directory(target: AdbTarget) -> None:
 
 
 def write_remote_temp(target: AdbTarget, path: str, content: bytes) -> None:
-    run_adb_exec_out(
-        target,
-        f"umask 077; cat > {path} && chmod 0600 {path}",
-        input_bytes=content,
-    )
+    descriptor, local_path = tempfile.mkstemp(prefix="cortana-provision-")
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "wb") as local_file:
+            local_file.write(content)
+            local_file.flush()
+            os.fsync(local_file.fileno())
+        subprocess.run(
+            target.command("push", adb_local_path(target, local_path), path),
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
+        run_adb_shell(target, f"chmod 0600 {path}")
+    finally:
+        try:
+            with open(local_path, "r+b", buffering=0) as local_file:
+                local_file.write(b"\0" * len(content))
+                os.fsync(local_file.fileno())
+        except FileNotFoundError:
+            pass
+        try:
+            os.unlink(local_path)
+        except FileNotFoundError:
+            pass
 
 
 def cleanup_remote(target: AdbTarget, paths: Sequence[str]) -> None:
