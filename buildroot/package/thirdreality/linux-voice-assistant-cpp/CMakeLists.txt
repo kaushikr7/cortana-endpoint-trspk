@@ -44,6 +44,7 @@ add_executable(linux-voice-assistant-cpp
     src/cortana/CurlSessionTransport.cpp
     src/cortana/DeviceTicket.cpp
     src/cortana/DeviceTicketClient.cpp
+    src/cortana/EndpointRuntime.cpp
     src/cortana/EndpointState.cpp
     src/cortana/Protocol.cpp
     src/cortana/SessionClient.cpp

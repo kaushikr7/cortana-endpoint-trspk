@@ -1007,6 +1007,17 @@ of the combined T4.3/T4.4 image build.
   passes, run one full image build covering T4.3 and T4.4, then validate TTS,
   local feedback, AEC reference, image size, boot time, and runtime metrics.
 
+Implementation moves server-event playback dispatch, physical mute/home
+policy, session-generation isolation, mute synchronization, and bounded ordered
+control/acknowledgement retry into `cortana/EndpointRuntime.{h,cpp}`. The
+runtime is single-threaded and injected with session, capture, playback, and
+activation-ID functions; it does not take ownership away from the existing
+network, ALSA, or PulseAudio workers. `main.cpp` now constructs those owners,
+polls hardware, forwards events/results, renders the reduced state, and logs
+metrics. Run `script/test_endpoint_runtime.sh` for playback ordering, physical
+cancel, mute ordering, command pressure, activation, and stale-generation
+coverage. The combined T4.3/T4.4 target build remains deferred as planned.
+
 Gate: Cortana PCM plays completely, stops immediately when cancelled, and the
 production image no longer carries a general media player stack. The endpoint
 runtime has one tested coordinator rather than turn/control policy embedded in

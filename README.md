@@ -59,6 +59,7 @@ These checks do not build firmware or access a device:
 ./script/test_capture_pipeline.sh
 ./script/test_pcm_playback.sh
 ./script/test_endpoint_state.sh
+./script/test_endpoint_runtime.sh
 ./script/test_netmonitor.sh
 ./script/test_no_local_wake.sh
 ./script/test_no_legacy_media.sh
