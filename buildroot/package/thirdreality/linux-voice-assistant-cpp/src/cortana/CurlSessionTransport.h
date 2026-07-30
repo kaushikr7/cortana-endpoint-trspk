@@ -14,6 +14,7 @@ struct CurlSessionOptions {
     std::filesystem::path ca_bundle =
         "/etc/ssl/certs/ca-certificates.crt";
     std::chrono::milliseconds connect_timeout{10000};
+    std::chrono::milliseconds send_timeout{2000};
     std::size_t maximum_inbound_message_bytes = 1024 * 1024;
 };
 

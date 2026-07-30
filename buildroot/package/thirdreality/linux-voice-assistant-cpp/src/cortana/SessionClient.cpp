@@ -181,8 +181,9 @@ bool SessionClient::EnqueueAudioFrame(
         }
         last_audio_overload_ = now;
         ++audio_overload_strikes_;
-        if (audio_overload_strikes_ >=
-            options_.maximum_audio_overload_strikes) {
+        if (!audio_reconnect_requested_ &&
+            audio_overload_strikes_ >=
+                options_.maximum_audio_overload_strikes) {
             audio_reconnect_requested_ = true;
             ++snapshot_.audio_overload_reconnects;
             DropQueuedAudioLocked();
@@ -506,6 +507,9 @@ void SessionClient::SetPhase(SessionPhase phase, std::string detail) {
         if (phase != SessionPhase::Ready) {
             snapshot_.audio_started = false;
             DropQueuedAudioLocked();
+            audio_overload_strikes_ = 0;
+            last_audio_overload_ = SteadyClock::time_point{};
+            audio_reconnect_requested_ = false;
             snapshot_.session_id.clear();
             snapshot_.health = phase == SessionPhase::Backoff
                 ? Health::Reconnecting

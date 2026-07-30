@@ -45,6 +45,7 @@ public:
         : options_(std::move(options)),
           handle_(::curl_easy_init(), &::curl_easy_cleanup) {
         if (options_.connect_timeout <= std::chrono::milliseconds::zero() ||
+            options_.send_timeout <= std::chrono::milliseconds::zero() ||
             options_.maximum_inbound_message_bytes == 0) {
             throw SessionTransportError("invalid WebSocket transport options");
         }
@@ -231,6 +232,7 @@ private:
     void SendFrame(std::string_view payload, unsigned int frame_type) {
         std::size_t offset = 0;
         bool first = true;
+        const auto deadline = SteadyClock::now() + options_.send_timeout;
         while (true) {
             std::size_t sent = 0;
             const unsigned int flags = frame_type | CURLWS_OFFSET;
@@ -253,8 +255,7 @@ private:
             if (result == CURLE_OK && offset >= payload.size()) return;
 
             if (result == CURLE_AGAIN || sent == 0) {
-                if (!Wait(POLLOUT,
-                          SteadyClock::now() + options_.connect_timeout)) {
+                if (!Wait(POLLOUT, deadline)) {
                     throw SessionTransportError(
                         "timed out sending Cortana WebSocket frame");
                 }
