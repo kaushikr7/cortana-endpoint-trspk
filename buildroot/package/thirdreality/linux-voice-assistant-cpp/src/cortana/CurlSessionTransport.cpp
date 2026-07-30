@@ -2,7 +2,10 @@
 
 #include <curl/curl.h>
 
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <poll.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -91,9 +94,23 @@ public:
             throw SessionTransportError(
                 "Cortana WebSocket has no active socket");
         }
+        ConfigureSocket();
     }
 
-    ~CurlWebSocket() override = default;
+    ~CurlWebSocket() override {
+        if (!closed_ && socket_ != CURL_SOCKET_BAD) {
+            // A failed audio session must not flush kernel-buffered stale PCM
+            // after Wi-Fi returns. Abort this socket; the session owner will
+            // obtain a fresh ticket and open a replacement connection.
+            linger abortive_close{
+                .l_onoff = 1,
+                .l_linger = 0,
+            };
+            (void)::setsockopt(
+                static_cast<int>(socket_), SOL_SOCKET, SO_LINGER,
+                &abortive_close, sizeof(abortive_close));
+        }
+    }
 
     void SendText(std::string_view payload) override {
         SendFrame(payload, CURLWS_TEXT);
@@ -205,6 +222,27 @@ public:
     }
 
 private:
+    void ConfigureSocket() {
+        // Bound kernel-side audio buffering to roughly one second at the
+        // 32 kB/s PCM payload rate. Linux doubles SO_SNDBUF internally.
+        int send_buffer_bytes = 16 * 1024;
+        if (::setsockopt(
+                static_cast<int>(socket_), SOL_SOCKET, SO_SNDBUF,
+                &send_buffer_bytes, sizeof(send_buffer_bytes)) != 0) {
+            throw SessionTransportError(
+                "failed to bound Cortana WebSocket send buffer");
+        }
+
+        const unsigned int user_timeout_ms = static_cast<unsigned int>(
+            options_.send_timeout.count());
+        if (::setsockopt(
+                static_cast<int>(socket_), IPPROTO_TCP, TCP_USER_TIMEOUT,
+                &user_timeout_ms, sizeof(user_timeout_ms)) != 0) {
+            throw SessionTransportError(
+                "failed to set Cortana WebSocket TCP user timeout");
+        }
+    }
+
     bool Wait(short events, SteadyClock::time_point deadline) {
         while (true) {
             const auto now = SteadyClock::now();

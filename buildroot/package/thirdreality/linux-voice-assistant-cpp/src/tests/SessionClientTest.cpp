@@ -422,6 +422,16 @@ void TestPersistentAudioOverloadReconnects() {
     }
     assert(client->Snapshot().audio_overload_reconnects == 1);
 
+    // The network owner is still blocked. Continued producer pressure must
+    // not count the same pending replacement hundreds of times.
+    for (int extra_pressure = 0; extra_pressure < 10; ++extra_pressure) {
+        assert(client->EnqueueAudioFrame(first_generation, frame));
+        assert(client->EnqueueAudioFrame(first_generation, frame));
+        assert(!client->EnqueueAudioFrame(first_generation, frame));
+        client->DiscardAudioFrames();
+    }
+    assert(client->Snapshot().audio_overload_reconnects == 1);
+
     {
         std::lock_guard lock(first->mutex);
         first->release_binary = true;
@@ -434,6 +444,49 @@ void TestPersistentAudioOverloadReconnects() {
             snapshot.audio_started;
     }));
     assert(dependencies->TicketRequests() >= 2);
+    client->Stop();
+}
+
+void TestTransportFailureClearsPendingOverloadReconnect() {
+    auto options = FastOptions();
+    options.maximum_queued_audio_frames = 2;
+    options.maximum_audio_overload_strikes = 1;
+    auto dependencies = std::make_shared<FakeDependencies>(
+        std::vector<ConnectionPlan>{{
+            std::nullopt, false, false, false, true}, {}});
+    auto client = MakeClient(dependencies, options);
+    client->Start();
+    assert(client->WaitForPhase(SessionPhase::Ready, 1s));
+    assert(WaitUntil([&] { return client->Snapshot().audio_started; }));
+    const auto first_generation = client->Snapshot().generation;
+    std::array<std::byte, lva::cortana::kMicrophoneFrameBytes> frame{};
+
+    assert(client->EnqueueAudioFrame(first_generation, frame));
+    const auto first = dependencies->State(0);
+    assert(first);
+    assert(WaitUntil([&] {
+        std::lock_guard lock(first->mutex);
+        return first->binary_blocked;
+    }));
+    assert(client->EnqueueAudioFrame(first_generation, frame));
+    assert(client->EnqueueAudioFrame(first_generation, frame));
+    assert(!client->EnqueueAudioFrame(first_generation, frame));
+    assert(client->Snapshot().audio_overload_reconnects == 1);
+
+    {
+        std::lock_guard lock(first->mutex);
+        first->release_binary = true;
+        first->condition.notify_all();
+    }
+    assert(WaitUntil([&] {
+        const auto snapshot = client->Snapshot();
+        return snapshot.generation > first_generation &&
+            snapshot.phase == SessionPhase::Ready &&
+            snapshot.audio_started;
+    }));
+    std::this_thread::sleep_for(20ms);
+    assert(dependencies->TicketRequests() == 2);
+    assert(client->Snapshot().audio_overload_reconnects == 1);
     client->Stop();
 }
 
@@ -554,6 +607,7 @@ int main() {
     TestAudioGenerationMuteAndBackpressure();
     TestReconnectDropsOldAudioGeneration();
     TestPersistentAudioOverloadReconnects();
+    TestTransportFailureClearsPendingOverloadReconnect();
     TestReconnectRefreshesTicket();
     TestReplacementCloseIsTerminal();
     TestNegotiatedIdentityMismatchIsTerminal();
