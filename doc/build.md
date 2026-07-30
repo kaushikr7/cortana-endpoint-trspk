@@ -346,6 +346,12 @@ rotation.
 USB ADB or authenticated SSH is sufficient for initial provisioning. Do not
 build a web or BLE commissioning interface for the first endpoint.
 
+Wi-Fi commissioning uses `script/provision_wifi.py` on Linux or
+`script/provision_wifi.ps1` on native Windows. Both use protected temporary
+files and device-side file expansion so the PSK is never placed in host history
+or the host ADB argument list. The existing device `wifi_connect` process sees
+the PSK only for the duration of the USB commissioning operation.
+
 USB firmware burning and USB ADB provisioning are sequential modes, not
 competing services. Flash first in Amlogic burn mode, then boot normally and
 provision over ADB. Although the current full-image manifest does not include a

@@ -113,3 +113,31 @@ deletes it immediately after each transfer.
 
 When multiple ADB devices are attached, always pass `--serial`. The same
 speaker exposed over USB and TCP appears as two separate ADB targets.
+
+## Provision Wi-Fi over USB
+
+Wi-Fi provisioning also keeps the password out of shell history and ADB
+arguments. On Linux:
+
+```bash
+./script/provision_wifi.py provision \
+  --serial <usb-serial> \
+  --ssid satori
+
+./script/provision_wifi.py status --serial <usb-serial>
+```
+
+On native Windows PowerShell:
+
+```powershell
+.\script\provision_wifi.ps1 provision `
+  -Serial a8e29151d253 `
+  -Ssid satori
+
+.\script\provision_wifi.ps1 status -Serial a8e29151d253
+```
+
+Both tools prompt for the password without echo, transfer the SSID and password
+as short-lived protected files over USB ADB, and make the device delete them
+before attempting association. Add `--open-network` on Linux or `-OpenNetwork`
+in PowerShell only for an intentionally open network.
