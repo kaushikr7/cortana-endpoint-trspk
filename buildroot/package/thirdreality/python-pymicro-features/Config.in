@@ -1,7 +1,0 @@
-config BR2_PACKAGE_PYTHON_PYMICRO_FEATURES
-	bool "python-pymicro-features"
-	depends on BR2_PACKAGE_PYTHON3
-	help
-	  Audio feature extraction for micro wake word detection (C++ extension).
-
-	  https://github.com/OHF-Voice/pymicro-features

@@ -59,18 +59,6 @@ void PopulateFromJson(Preferences& out,
             storage_path.parent_path() / kSoundFileName);
     }
 
-    if (auto it = obj.find("active_wake_words"); it != obj.end() && it->is_array()) {
-        for (const auto& item : *it) {
-            if (item.is_null()) {
-                out.active_wake_words.emplace_back(std::nullopt);
-            } else if (item.is_string()) {
-                out.active_wake_words.emplace_back(item.get<std::string>());
-            } else {
-                out.active_wake_words.emplace_back(std::nullopt);
-            }
-        }
-    }
-
     if (auto it = obj.find("volume"); it != obj.end() && !it->is_null()
                                        && it->is_number()) {
         const double raw = it->get<double>();
@@ -87,30 +75,11 @@ void PopulateFromJson(Preferences& out,
     out.mic_volume = std::clamp(
         CoerceInt(obj.value("mic_volume", 100), 100), 1, 100);
 
-    auto load_optional_double = [&](const char* key) -> std::optional<double> {
-        if (auto it = obj.find(key);
-            it != obj.end() && !it->is_null() && it->is_number()) {
-            return it->get<double>();
-        }
-        return std::nullopt;
-    };
-    out.wake_word_1_sensitivity = load_optional_double("wake_word_1_sensitivity");
-    out.wake_word_2_sensitivity = load_optional_double("wake_word_2_sensitivity");
-    out.stop_word_sensitivity   = load_optional_double("stop_word_sensitivity");
 }
 
 void ApplyToJson(const Preferences& prefs, nlohmann::json& obj) {
     if (!obj.is_object()) {
         obj = nlohmann::json::object();
-    }
-
-    {
-        nlohmann::json arr = nlohmann::json::array();
-        for (const auto& slot : prefs.active_wake_words) {
-            if (slot.has_value()) arr.push_back(*slot);
-            else                  arr.push_back(nullptr);
-        }
-        obj["active_wake_words"] = std::move(arr);
     }
 
     obj["thinking_sound"] = prefs.thinking_sound ? 1 : 0;
@@ -132,17 +101,6 @@ void ApplyToJson(const Preferences& prefs, nlohmann::json& obj) {
     obj["mic_noise_suppression"] = prefs.mic_noise_suppression;
     obj["mic_volume"]            = prefs.mic_volume;
 
-    auto store_optional_double = [&](const char* key,
-                                     const std::optional<double>& v) {
-        if (v.has_value()) {
-            obj[key] = *v;
-        } else {
-            obj.erase(key);
-        }
-    };
-    store_optional_double("wake_word_1_sensitivity", prefs.wake_word_1_sensitivity);
-    store_optional_double("wake_word_2_sensitivity", prefs.wake_word_2_sensitivity);
-    store_optional_double("stop_word_sensitivity",   prefs.stop_word_sensitivity);
 }
 
 }  // namespace

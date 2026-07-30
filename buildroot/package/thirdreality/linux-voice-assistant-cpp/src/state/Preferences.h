@@ -5,7 +5,6 @@
 #include <filesystem>
 #include <optional>
 #include <string>
-#include <vector>
 
 namespace lva::state {
 
@@ -18,16 +17,10 @@ class Preferences {
 
     // ---- mutable fields ----
 
-    std::vector<std::optional<std::string>> active_wake_words;
-
     std::optional<double> volume;
 
     // 0 = disabled, 1 = enabled. Anything outside is treated as 0.
     int thinking_sound = 0;
-
-    std::optional<double> wake_word_1_sensitivity;
-    std::optional<double> wake_word_2_sensitivity;
-    std::optional<double> stop_word_sensitivity;
 
     // WebRTC AGC / NS levels, 0..N. 0 = off.
     int mic_auto_gain         = 0;

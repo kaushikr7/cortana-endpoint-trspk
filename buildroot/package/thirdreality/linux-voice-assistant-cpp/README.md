@@ -52,7 +52,7 @@ the repository [README](../../../../README.md).
 ```text
 src/config/                 Protected endpoint configuration
 src/cortana/                Protocol, ticket, WSS transport, session lifecycle
-src/audio/                  Audio hardware and temporary local-wake code
+src/audio/                  Continuous capture, AEC, and playback components
 src/tr/                     TRSPK LEDs, GPIO, button, and volume integration
 src/tools/                  Host/device audio diagnostics
 src/util/                   Logging helper
@@ -60,4 +60,5 @@ src/util/                   Logging helper
 
 Buildroot dependencies currently include JSON for Modern C++, libcurl with
 OpenSSL/WebSocket support, ALSA, PulseAudio, WebRTC audio processing, and MPV.
-Wake and legacy media dependencies remain until their dedicated purge tickets.
+All local wake implementations, models, feature extraction, and TFLite runtime
+have been removed; wake detection is owned by Cortana server-side.

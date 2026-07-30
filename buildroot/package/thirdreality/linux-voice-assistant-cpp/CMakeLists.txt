@@ -28,10 +28,9 @@ message(STATUS "Found mpv ${MPV_VERSION} via pkg-config")
 pkg_check_modules(PULSE_SIMPLE REQUIRED IMPORTED_TARGET libpulse-simple)
 message(STATUS "Found libpulse-simple ${PULSE_SIMPLE_VERSION} via pkg-config")
 
-# webrtc-audio-processing 1.x: AGC + NoiseSuppression for the mic
-# pipeline (phase 6). Without this, wake-word detection rate is
-# noticeably worse than the Python build (which uses
-# webrtc-noise-gain). The pkg-config name is "webrtc-audio-processing-1".
+# webrtc-audio-processing 1.x: AEC, AGC, and noise suppression for the
+# continuous microphone pipeline. The pkg-config name is
+# "webrtc-audio-processing-1".
 pkg_check_modules(WEBRTC_APM REQUIRED IMPORTED_TARGET webrtc-audio-processing-1)
 message(STATUS "Found webrtc-audio-processing ${WEBRTC_APM_VERSION} via pkg-config")
 
@@ -42,51 +41,6 @@ message(STATUS "Found libcurl ${LIBCURL_VERSION} via pkg-config")
 # alsa-lib: production capture and the AEC loopback diagnostic.
 pkg_check_modules(ALSA REQUIRED IMPORTED_TARGET alsa)
 message(STATUS "Found alsa-lib ${ALSA_VERSION} via pkg-config")
-
-# ---------------------------------------------------------------------------
-# Vendored microfrontend + kissfft (phase 4 audio feature extractor)
-# ---------------------------------------------------------------------------
-# These C/C++ sources are the same TFLite Micro `microfrontend` and
-# kissfft fixed-point sources pymicro-features v2.0.2 ships. We
-# build them as a separate object library so we can apply
-# microfrontend-specific compile flags (notably -DFIXED_POINT=16
-# which kissfft hard-requires) without polluting the rest of the
-# project's flags.
-set(MICROFRONTEND_DIR
-    "${CMAKE_SOURCE_DIR}/third_party/microfrontend/include")
-
-set(MICROFRONTEND_SOURCES
-    ${MICROFRONTEND_DIR}/tensorflow/lite/experimental/microfrontend/lib/fft.cc
-    ${MICROFRONTEND_DIR}/tensorflow/lite/experimental/microfrontend/lib/fft_util.cc
-    ${MICROFRONTEND_DIR}/tensorflow/lite/experimental/microfrontend/lib/filterbank.cc
-    ${MICROFRONTEND_DIR}/tensorflow/lite/experimental/microfrontend/lib/filterbank_util.cc
-    ${MICROFRONTEND_DIR}/tensorflow/lite/experimental/microfrontend/lib/frontend.cc
-    ${MICROFRONTEND_DIR}/tensorflow/lite/experimental/microfrontend/lib/frontend_util.cc
-    ${MICROFRONTEND_DIR}/tensorflow/lite/experimental/microfrontend/lib/kiss_fft_int16.cc
-    ${MICROFRONTEND_DIR}/tensorflow/lite/experimental/microfrontend/lib/log_lut.cc
-    ${MICROFRONTEND_DIR}/tensorflow/lite/experimental/microfrontend/lib/log_scale.cc
-    ${MICROFRONTEND_DIR}/tensorflow/lite/experimental/microfrontend/lib/log_scale_util.cc
-    ${MICROFRONTEND_DIR}/tensorflow/lite/experimental/microfrontend/lib/noise_reduction.cc
-    ${MICROFRONTEND_DIR}/tensorflow/lite/experimental/microfrontend/lib/noise_reduction_util.cc
-    ${MICROFRONTEND_DIR}/tensorflow/lite/experimental/microfrontend/lib/pcan_gain_control.cc
-    ${MICROFRONTEND_DIR}/tensorflow/lite/experimental/microfrontend/lib/pcan_gain_control_util.cc
-    ${MICROFRONTEND_DIR}/tensorflow/lite/experimental/microfrontend/lib/window.cc
-    ${MICROFRONTEND_DIR}/tensorflow/lite/experimental/microfrontend/lib/window_util.cc
-)
-
-add_library(lva_microfrontend OBJECT ${MICROFRONTEND_SOURCES})
-target_include_directories(lva_microfrontend PUBLIC
-    ${MICROFRONTEND_DIR}
-    ${MICROFRONTEND_DIR}/kissfft
-)
-target_compile_definitions(lva_microfrontend PUBLIC FIXED_POINT=16)
-target_compile_options(lva_microfrontend PRIVATE
-    -Wno-unused-parameter
-    -Wno-unused-but-set-variable
-    -Wno-unused-variable
-    -Wno-pedantic
-    -Wno-sign-compare
-)
 
 add_executable(linux-voice-assistant-cpp
     src/main.cpp
@@ -133,62 +87,6 @@ target_link_libraries(linux-voice-assistant-cpp
 )
 
 install(TARGETS linux-voice-assistant-cpp RUNTIME DESTINATION bin)
-
-# ---------------------------------------------------------------------------
-# Dev tool: micro_features_dump (phase 4a verification)
-# ---------------------------------------------------------------------------
-# Small CLI that reads a 16 kHz mono S16LE WAV and prints C++
-# MicroFeatures output as text — one frame per line, 40 floats. The
-# host-side `test/verify_phase4a_features.py` compares against
-# pymicro_features.
-add_executable(micro_features_dump
-    src/tools/micro_features_dump.cpp
-    src/audio/MicroFeatures.cpp
-    src/util/Log.cpp
-)
-target_include_directories(micro_features_dump PRIVATE
-    ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(micro_features_dump PRIVATE
-    lva_microfrontend
-    Threads::Threads
-)
-install(TARGETS micro_features_dump RUNTIME DESTINATION bin)
-
-# Dev tool: tflite_inspect (phase 4b verification)
-# Prints shape/type/quant of all input/output tensors of a .tflite.
-add_executable(tflite_inspect
-    src/tools/tflite_inspect.cpp
-    src/audio/TfliteRuntime.cpp
-    src/util/Log.cpp
-)
-target_include_directories(tflite_inspect PRIVATE
-    ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(tflite_inspect PRIVATE
-    Threads::Threads
-    ${CMAKE_DL_LIBS}
-)
-install(TARGETS tflite_inspect RUNTIME DESTINATION bin)
-
-# Dev tool: wake_word_dump (phase 4c verification)
-# Loads a microWakeWord JSON config and runs a WAV through the full
-# C++ pipeline (features → quantize → invoke → window). Emits one
-# line per invoke for cross-comparison with pymicro_wakeword.
-add_executable(wake_word_dump
-    src/tools/wake_word_dump.cpp
-    src/audio/MicroFeatures.cpp
-    src/audio/MicroWakeWord.cpp
-    src/audio/TfliteRuntime.cpp
-    src/util/Log.cpp
-)
-target_include_directories(wake_word_dump PRIVATE
-    ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(wake_word_dump PRIVATE
-    lva_microfrontend
-    nlohmann_json::nlohmann_json
-    Threads::Threads
-    ${CMAKE_DL_LIBS}
-)
-install(TARGETS wake_word_dump RUNTIME DESTINATION bin)
 
 # Dev tool: aec_loopback_test
 # Verifies hardware-loopback AEC using the same WebRTC APM 1.3 pipeline

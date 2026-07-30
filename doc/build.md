@@ -906,6 +906,15 @@ mute, bounds, scripted backpressure, and reconnect isolation.
 - Full-build and confirm no wake model or TFLite library remains in the target
   filesystem and idle/capture CPU have not regressed.
 
+Implementation removes the unused legacy Python assistant and its wake-only
+Buildroot packages, both native local-wake implementations, all bundled wake
+models, the TFLite C runtime, microfrontend sources, wake preferences, install
+hooks, and wake debug tools. Server-side wake protocol messages and the manual
+home-button fallback remain because neither performs inference on the device.
+The ALSA/WebRTC `aec_loopback_test` diagnostic is retained. Run
+`script/test_no_local_wake.sh` for the host-side absence check; target-filesystem
+and CPU confirmation remain part of the next full image/device acceptance run.
+
 Gate: bounded continuous audio reaches the fake server and the image contains
 no on-device wake implementation or model.
 
