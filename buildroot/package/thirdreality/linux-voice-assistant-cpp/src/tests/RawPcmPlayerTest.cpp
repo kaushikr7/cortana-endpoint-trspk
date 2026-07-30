@@ -137,6 +137,9 @@ void TestCompletionFollowsPhysicalDrain() {
         std::lock_guard lock(state->mutex);
         return state->drain_entered;
     }));
+    const auto started = player.TryPopResult();
+    assert(started.has_value());
+    assert(started->outcome == lva::audio::RawPlaybackOutcome::Started);
     assert(!player.TryPopResult().has_value());
     {
         std::lock_guard lock(state->mutex);
@@ -218,6 +221,9 @@ void TestStopInterruptsDrainWithoutCompleting() {
     player.Stop("turn-drain", "cancelled_during_drain");
     assert(WaitUntil([&] { return player.Snapshot().stopped == 1; }));
     assert(player.Snapshot().completed == 0);
+    const auto started = player.TryPopResult();
+    assert(started.has_value());
+    assert(started->outcome == lva::audio::RawPlaybackOutcome::Started);
     const auto result = player.TryPopResult();
     assert(result.has_value());
     assert(result->outcome == lva::audio::RawPlaybackOutcome::Stopped);

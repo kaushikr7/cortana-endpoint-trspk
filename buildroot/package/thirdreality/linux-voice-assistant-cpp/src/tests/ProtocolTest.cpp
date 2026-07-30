@@ -83,6 +83,19 @@ void TestClientSerialization() {
     const Json cancel = Json::parse(SerializeTurnCancel(std::nullopt));
     assert(cancel.at("source") == "physical");
     assert(cancel.at("reason") == "user_cancelled");
+    const Json mute_cancel = Json::parse(SerializeTurnCancel(
+        std::string("turn-1"), CancellationSource::Mute,
+        "microphone_muted"));
+    assert(mute_cancel.at("turnId") == "turn-1");
+    assert(mute_cancel.at("source") == "mute");
+    assert(Json::parse(SerializePlaybackStarted("turn-1")).at("type") ==
+           "playback.started");
+    assert(Json::parse(SerializePlaybackCompleted("turn-1")).at("type") ==
+           "playback.completed");
+    const Json stopped = Json::parse(SerializePlaybackStopped(
+        "turn-1", "playback_stopped"));
+    assert(stopped.at("type") == "playback.stopped");
+    assert(stopped.at("reason") == "playback_stopped");
 
     ExpectProtocolError([] {
         (void)SerializeWakeManual("identifier with spaces");

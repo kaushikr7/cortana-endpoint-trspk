@@ -20,7 +20,7 @@
 namespace lva::audio {
 
 enum class RawPlaybackState { Idle, Playing, Draining, Error };
-enum class RawPlaybackOutcome { Completed, Stopped, Error };
+enum class RawPlaybackOutcome { Started, Completed, Stopped, Error };
 
 struct RawPlaybackResult {
     std::string turn_id;
@@ -37,6 +37,7 @@ struct RawPlaybackSnapshot {
     std::uint64_t bytes_written = 0;
     std::uint64_t bytes_rejected = 0;
     std::uint64_t bytes_discarded = 0;
+    std::uint64_t started = 0;
     std::uint64_t completed = 0;
     std::uint64_t stopped = 0;
     std::uint64_t errors = 0;

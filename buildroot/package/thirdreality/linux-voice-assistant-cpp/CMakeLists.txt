@@ -48,6 +48,7 @@ add_executable(linux-voice-assistant-cpp
     src/cortana/CurlSessionTransport.cpp
     src/cortana/DeviceTicket.cpp
     src/cortana/DeviceTicketClient.cpp
+    src/cortana/EndpointState.cpp
     src/cortana/Protocol.cpp
     src/cortana/SessionClient.cpp
     src/state/Preferences.cpp
@@ -61,6 +62,7 @@ add_executable(linux-voice-assistant-cpp
     src/audio/MicrophoneIngress.cpp
     src/audio/WebRtcProcessor.cpp
     src/tr/HomeButton.cpp
+    src/tr/EndpointLedPolicy.cpp
     src/tr/LedController.cpp
     src/tr/MicMuteGpio.cpp
     src/tr/SysInfo.cpp

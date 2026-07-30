@@ -91,6 +91,8 @@ LedPresentation LedController::PresentationFor(LedState state) {
             return {"active-thinking.animation", false};
         case LedState::Speaking:
             return {"active-talking.animation", false};
+        case LedState::Cancelling:
+            return {"active-ending.animation", true};
         case LedState::Error:
             return {"error.animation", true};
         case LedState::Updating:

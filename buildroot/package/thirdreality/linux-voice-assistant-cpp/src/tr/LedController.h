@@ -18,6 +18,7 @@ enum class LedState {
     Listening,
     Thinking,
     Speaking,
+    Cancelling,
     Error,
     Updating,
     Blocked,

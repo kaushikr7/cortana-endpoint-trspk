@@ -58,6 +58,7 @@ These checks do not build firmware or access a device:
 ./script/test_cortana_session.sh
 ./script/test_capture_pipeline.sh
 ./script/test_pcm_playback.sh
+./script/test_endpoint_state.sh
 ./script/test_netmonitor.sh
 ./script/test_no_local_wake.sh
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \

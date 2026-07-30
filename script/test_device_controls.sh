@@ -10,6 +10,7 @@ ${CXX:-g++} -std=c++20 -Wall -Wextra -Wpedantic -pthread \
     -I "$source_dir" \
     "$source_dir/tests/DeviceControlsTest.cpp" \
     "$source_dir/tr/HomeButton.cpp" \
+    "$source_dir/tr/EndpointLedPolicy.cpp" \
     "$source_dir/tr/LedController.cpp" \
     "$source_dir/tr/MicMuteGpio.cpp" \
     "$source_dir/util/Log.cpp" \

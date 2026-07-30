@@ -950,6 +950,25 @@ part of the next full image acceptance run.
   to the endpoint state machine and ring priority. Keep mute indication on the
   dedicated mute-button LED.
 
+Implementation adds one `EndpointState` reducer for session generation,
+server turn events, physical playback results, mute, and the active turn ID.
+The home button and mute policy cancel that exact turn when no response is
+playing. During playback they follow Halo's established ordering:
+`playback.stopped` after physical flush, followed by `mute.changed` when mute
+initiated the stop; Cortana then reports the turn cancellation.
+`playback.started` is queued only after the first successful PulseAudio write,
+`playback.completed` only after the exact drain result, and
+`playback.stopped` only after flush (or a flushed playback error). Results from
+a disconnected generation are logged but never acknowledged on a replacement
+session. A bounded generation-tagged queue preserves acknowledgement ordering
+across temporary command-queue pressure without carrying it across reconnect.
+`EndpointLedPolicy` maps listening, thinking, speaking, cancellation,
+reconnect, and blocked state through the controller's priority layers.
+Cancellation uses `active-ending.animation`; mute has no ring state because the
+hardware button owns its own mute LED. Host coverage is in
+`script/test_endpoint_state.sh`, `script/test_pcm_playback.sh`,
+`script/test_device_controls.sh`, and `script/test_cortana_protocol.sh`.
+
 #### T4.3 Remove MPV/FFmpeg and trim sound assets — Medium
 
 - Delete `LibMpvPlayer` and remove MPV/FFmpeg selections only after Buildroot's

@@ -147,6 +147,7 @@ void RawPcmPlayer::SetStateLocked(
 
 void RawPcmPlayer::PushResultLocked(RawPlaybackResult result) {
     switch (result.outcome) {
+        case RawPlaybackOutcome::Started: ++snapshot_.started; break;
         case RawPlaybackOutcome::Completed: ++snapshot_.completed; break;
         case RawPlaybackOutcome::Stopped: ++snapshot_.stopped; break;
         case RawPlaybackOutcome::Error: ++snapshot_.errors; break;
@@ -162,6 +163,7 @@ void RawPcmPlayer::Run() {
     std::unique_ptr<PcmSink> sink;
     std::string current_turn;
     std::size_t maximum_write_slice = 0;
+    bool playback_started = false;
 
     while (true) {
         Command command;
@@ -186,6 +188,7 @@ void RawPcmPlayer::Run() {
         if (const auto* begin = std::get_if<BeginCommand>(&command)) {
             sink = sink_factory_();
             current_turn = begin->turn_id;
+            playback_started = false;
             maximum_write_slice = static_cast<std::size_t>(
                 begin->format.sample_rate * begin->format.sample_width *
                 begin->format.channels / 50);  // 20 ms
@@ -253,6 +256,14 @@ void RawPcmPlayer::Run() {
                     } else {
                         snapshot_.queued_bytes -= bytes;
                         snapshot_.bytes_written += bytes;
+                        if (!playback_started) {
+                            playback_started = true;
+                            PushResultLocked({
+                                current_turn,
+                                RawPlaybackOutcome::Started,
+                                {},
+                            });
+                        }
                         offset += bytes;
                     }
                 }

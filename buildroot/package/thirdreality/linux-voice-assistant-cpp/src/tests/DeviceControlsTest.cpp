@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "tr/HomeButton.h"
+#include "tr/EndpointLedPolicy.h"
 #include "tr/LedController.h"
 #include "tr/MicMuteGpio.h"
 #include "tr/PhysicalControlPolicy.h"
@@ -55,6 +56,45 @@ void TestLedPriorityAndExpiry() {
     const auto error = lva::tr::LedController::PresentationFor(LedState::Error);
     assert(error.animation == "error.animation");
     assert(error.return_to_idle);
+}
+
+void TestEndpointLedStateMapping() {
+    lva::tr::LedController leds([](const lva::tr::LedPresentation&) {});
+    leds.SetBase(LedState::Ready);
+    lva::cortana::EndpointSnapshot endpoint;
+    endpoint.phase = lva::cortana::SessionPhase::Connecting;
+    endpoint.generation = 1;
+    lva::tr::EndpointLedPolicy::Apply(endpoint, leds);
+    assert(leds.EffectiveState() == LedState::Booting);
+
+    endpoint.phase = lva::cortana::SessionPhase::Backoff;
+    endpoint.generation = 2;
+    lva::tr::EndpointLedPolicy::Apply(endpoint, leds);
+    assert(leds.EffectiveState() == LedState::Reconnecting);
+
+    endpoint.phase = lva::cortana::SessionPhase::Ready;
+    endpoint.activity = lva::cortana::Activity::Hearing;
+    lva::tr::EndpointLedPolicy::Apply(endpoint, leds);
+    assert(leds.EffectiveState() == LedState::Listening);
+    endpoint.activity = lva::cortana::Activity::Thinking;
+    lva::tr::EndpointLedPolicy::Apply(endpoint, leds);
+    assert(leds.EffectiveState() == LedState::Thinking);
+    endpoint.activity = lva::cortana::Activity::Speaking;
+    lva::tr::EndpointLedPolicy::Apply(endpoint, leds);
+    assert(leds.EffectiveState() == LedState::Speaking);
+    endpoint.activity = lva::cortana::Activity::Interrupting;
+    lva::tr::EndpointLedPolicy::Apply(endpoint, leds);
+    assert(leds.EffectiveState() == LedState::Cancelling);
+
+    // Mute has a dedicated button LED and must not claim the ring.
+    endpoint.muted = true;
+    endpoint.activity = lva::cortana::Activity::Armed;
+    lva::tr::EndpointLedPolicy::Apply(endpoint, leds);
+    assert(leds.EffectiveState() == LedState::Ready);
+
+    endpoint.phase = lva::cortana::SessionPhase::Blocked;
+    lva::tr::EndpointLedPolicy::Apply(endpoint, leds);
+    assert(leds.EffectiveState() == LedState::Blocked);
 }
 
 void TestHomeButtonClassification() {
@@ -142,6 +182,7 @@ void TestMuteCallbackSourcesAndHardwareSync() {
 
 int main() {
     TestLedPriorityAndExpiry();
+    TestEndpointLedStateMapping();
     TestHomeButtonClassification();
     TestPhysicalControlPolicy();
     TestMuteCallbackSourcesAndHardwareSync();

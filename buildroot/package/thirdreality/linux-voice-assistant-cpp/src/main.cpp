@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -27,8 +28,10 @@
 #include "audio/RawPcmPlayer.h"
 #include "config/EndpointConfig.h"
 #include "cortana/CurlSessionTransport.h"
+#include "cortana/EndpointState.h"
 #include "cortana/Protocol.h"
 #include "cortana/SessionClient.h"
+#include "tr/EndpointLedPolicy.h"
 #include "tr/HomeButton.h"
 #include "tr/LedController.h"
 #include "tr/MicMuteGpio.h"
@@ -103,6 +106,17 @@ struct CliOptions {
     unsigned capture_mic_channel = 0;
     std::array<int, 2> capture_ref_channels = {2, 3};
     bool debug = false;
+};
+
+struct PendingPlaybackAcknowledgement {
+    std::uint64_t generation;
+    std::string payload;
+};
+
+struct PendingPlaybackStop {
+    std::uint64_t generation;
+    std::string turn_id;
+    bool notify_muted = false;
 };
 
 bool ParseUnsigned(std::string_view text, unsigned* output) {
@@ -252,66 +266,27 @@ int RunConfigCommand(const CliOptions& cli) {
 }
 
 lva::tr::EndpointActivity EndpointActivityFor(
-    const lva::cortana::SessionSnapshot& snapshot) {
+    const lva::cortana::EndpointSnapshot& snapshot) {
     if (snapshot.phase != lva::cortana::SessionPhase::Ready) {
         return lva::tr::EndpointActivity::Unavailable;
+    }
+    if (snapshot.playback_turn_id.has_value() ||
+        snapshot.activity == lva::cortana::Activity::Speaking ||
+        snapshot.activity == lva::cortana::Activity::Interrupting) {
+        return lva::tr::EndpointActivity::Playback;
+    }
+    if (snapshot.active_turn_id.has_value()) {
+        return lva::tr::EndpointActivity::ActiveTurn;
     }
     switch (snapshot.activity) {
         case lva::cortana::Activity::Armed:
         case lva::cortana::Activity::Idle:
             return lva::tr::EndpointActivity::Armed;
         case lva::cortana::Activity::Speaking:
+        case lva::cortana::Activity::Interrupting:
             return lva::tr::EndpointActivity::Playback;
         default:
             return lva::tr::EndpointActivity::ActiveTurn;
-    }
-}
-
-void ApplyLedState(const lva::cortana::SessionSnapshot& snapshot,
-                   lva::tr::LedController& leds) {
-    using lva::cortana::Activity;
-    using lva::cortana::SessionPhase;
-    using lva::tr::LedState;
-
-    leds.SetBlocked(snapshot.phase == SessionPhase::Blocked);
-    if (snapshot.phase == SessionPhase::Connecting ||
-        snapshot.phase == SessionPhase::Negotiating) {
-        leds.SetConnection(snapshot.generation <= 1
-                               ? LedState::Booting
-                               : LedState::Reconnecting);
-        leds.ClearTurn();
-        return;
-    }
-    if (snapshot.phase == SessionPhase::Backoff) {
-        leds.SetConnection(LedState::Reconnecting);
-        leds.ClearTurn();
-        return;
-    }
-    if (snapshot.phase != SessionPhase::Ready) {
-        leds.ClearConnection();
-        leds.ClearTurn();
-        return;
-    }
-
-    leds.ClearConnection();
-    switch (snapshot.activity) {
-        case Activity::WakePending:
-        case Activity::Hearing:
-        case Activity::FollowUp:
-            leds.SetTurn(LedState::Listening);
-            break;
-        case Activity::Transcribing:
-        case Activity::Thinking:
-            leds.SetTurn(LedState::Thinking);
-            break;
-        case Activity::Speaking:
-        case Activity::Interrupting:
-            leds.SetTurn(LedState::Speaking);
-            break;
-        case Activity::Armed:
-        case Activity::Idle:
-            leds.ClearTurn();
-            break;
     }
 }
 
@@ -431,6 +406,7 @@ int main(int argc, char** argv) {
 
     lva::cortana::SessionClient session(config, std::move(dependencies));
     session.Start();
+    lva::cortana::EndpointState endpoint_state;
 
     lva::audio::RawPcmPlayer player(
         lva::audio::RawPcmPlayer::Options{},
@@ -441,6 +417,10 @@ int main(int argc, char** argv) {
             return lva::audio::MakePulseAudioSink(
                 "alsa_output.hw_0_1");
         });
+    std::uint64_t playback_generation = 0;
+    std::string playback_turn_id;
+    std::optional<PendingPlaybackStop> pending_playback_stop;
+    std::deque<PendingPlaybackAcknowledgement> pending_playback_acks;
 
     lva::audio::CapturePipeline::Options capture_options;
     capture_options.capture.alsa_device = cli.capture_alsa_device;
@@ -463,35 +443,73 @@ int main(int argc, char** argv) {
 
     bool muted = false;
     lva::tr::MicMuteGpio mute_gpio(
-        [&session, &capture, &player, &muted](
+        [&session, &capture, &player, &endpoint_state,
+         &pending_playback_stop, &muted](
             bool new_muted, lva::tr::MuteChangeSource) {
+            const bool state_changed = muted != new_muted;
+            const auto endpoint = endpoint_state.Snapshot();
+            const auto decision =
+                lva::tr::PhysicalControlPolicy::OnMuteChanged(
+                    new_muted, state_changed,
+                    EndpointActivityFor(endpoint));
+            const auto active_turn = endpoint_state.ActiveTurnId();
             muted = new_muted;
             session.SetMicrophoneMuted(new_muted);
+            endpoint_state.SetMuted(new_muted);
             if (new_muted) {
                 (void)capture.DiscardQueued();
+                if (decision.cancel_turn &&
+                    endpoint.playback_turn_id.has_value()) {
+                    pending_playback_stop = PendingPlaybackStop{
+                        .generation = endpoint.generation,
+                        .turn_id = *endpoint.playback_turn_id,
+                        .notify_muted = true,
+                    };
+                }
                 player.Stop({}, "muted");
             }
-            (void)session.EnqueueText(
-                lva::cortana::SerializeMuteChanged(new_muted));
+            if (decision.cancel_turn &&
+                !endpoint.playback_turn_id.has_value()) {
+                (void)session.EnqueueText(lva::cortana::SerializeTurnCancel(
+                    active_turn, lva::cortana::CancellationSource::Mute,
+                    "microphone_muted"));
+            }
+            if (decision.notify_server &&
+                !(new_muted && pending_playback_stop.has_value())) {
+                (void)session.EnqueueText(
+                    lva::cortana::SerializeMuteChanged(new_muted));
+            }
         });
     if (mute_gpio.Available()) (void)mute_gpio.ReadAndApplyOnce();
 
     std::uint64_t activation_sequence = 0;
     lva::tr::HomeButton home_button(
         lva::tr::HomeButton::Options{},
-        [&session, &player,
+        [&session, &player, &endpoint_state, &pending_playback_stop,
          &activation_sequence](lva::tr::HomeButtonPress press) {
-            const auto snapshot = session.Snapshot();
+            const auto snapshot = endpoint_state.Snapshot();
             const auto action = lva::tr::PhysicalControlPolicy::OnHomeButton(
                 press, EndpointActivityFor(snapshot));
             if (action == lva::tr::ControlAction::ManualWake) {
                 (void)session.EnqueueText(lva::cortana::SerializeWakeManual(
                     NewManualActivationId(++activation_sequence)));
             } else if (action == lva::tr::ControlAction::CancelTurn) {
+                endpoint_state.BeginCancellation(
+                    endpoint_state.ActiveTurnId());
                 player.Stop({}, "user_cancelled");
-                (void)session.EnqueueText(lva::cortana::SerializeTurnCancel(
-                    std::nullopt, lva::cortana::CancellationSource::Physical,
-                    "user_cancelled"));
+                if (snapshot.playback_turn_id.has_value()) {
+                    pending_playback_stop = PendingPlaybackStop{
+                        .generation = snapshot.generation,
+                        .turn_id = *snapshot.playback_turn_id,
+                        .notify_muted = false,
+                    };
+                } else {
+                    (void)session.EnqueueText(
+                        lva::cortana::SerializeTurnCancel(
+                            endpoint_state.ActiveTurnId(),
+                            lva::cortana::CancellationSource::Physical,
+                            "user_cancelled"));
+                }
             }
         });
     const int home_button_fd = home_button.Start();
@@ -502,7 +520,6 @@ int main(int argc, char** argv) {
     lva::cortana::SessionPhase logged_phase =
         lva::cortana::SessionPhase::Stopped;
     std::uint64_t mute_synced_generation = 0;
-    std::uint64_t playback_generation = 0;
     auto next_capture_metrics = std::chrono::steady_clock::now() + 30s;
     while (g_shutdown_signal.load(std::memory_order_relaxed) == 0) {
         if (home_button_fd >= 0) {
@@ -524,39 +541,132 @@ int main(int argc, char** argv) {
 
         mute_gpio.Poll();
         leds.Poll();
+        auto snapshot = session.Snapshot();
+        endpoint_state.UpdateSession(snapshot);
         while (const auto event = session.TryPopEvent()) {
-            const auto current = session.Snapshot();
-            if (event->generation != current.generation) continue;
+            snapshot = session.Snapshot();
+            endpoint_state.UpdateSession(snapshot);
+            if (event->generation != snapshot.generation) continue;
+            endpoint_state.HandleServerEvent(*event);
             HandlePlaybackEvent(*event, player);
             if (std::holds_alternative<lva::cortana::OutputAudioStart>(
                     event->event)) {
                 playback_generation = event->generation;
+                playback_turn_id =
+                    std::get<lva::cortana::OutputAudioStart>(event->event)
+                        .turn_id;
+            } else if (const auto* cancelled =
+                           std::get_if<lva::cortana::TurnCancelled>(
+                               &event->event)) {
+                if (!cancelled->turn_id.has_value() ||
+                    *cancelled->turn_id == playback_turn_id) {
+                    playback_generation = 0;
+                    playback_turn_id.clear();
+                    pending_playback_stop.reset();
+                }
             }
         }
 
-        const auto snapshot = session.Snapshot();
+        snapshot = session.Snapshot();
+        endpoint_state.UpdateSession(snapshot);
         if (playback_generation != 0 &&
             (snapshot.phase != lva::cortana::SessionPhase::Ready ||
              snapshot.generation != playback_generation)) {
             player.Stop({}, "session_disconnected");
             playback_generation = 0;
+            playback_turn_id.clear();
+            pending_playback_stop.reset();
+            pending_playback_acks.clear();
         }
         while (const auto result = player.TryPopResult()) {
             const char* outcome = "error";
-            if (result->outcome ==
+            if (result->outcome == lva::audio::RawPlaybackOutcome::Started) {
+                outcome = "started";
+            } else if (result->outcome ==
                 lva::audio::RawPlaybackOutcome::Completed) {
                 outcome = "completed";
             } else if (result->outcome ==
                        lva::audio::RawPlaybackOutcome::Stopped) {
                 outcome = "stopped";
             }
+            endpoint_state.HandlePlaybackResult(*result);
+            if (snapshot.phase == lva::cortana::SessionPhase::Ready &&
+                snapshot.generation == playback_generation &&
+                result->turn_id == playback_turn_id) {
+                std::string acknowledgement;
+                if (result->outcome ==
+                    lva::audio::RawPlaybackOutcome::Started) {
+                    acknowledgement = lva::cortana::SerializePlaybackStarted(
+                        result->turn_id);
+                } else if (result->outcome ==
+                           lva::audio::RawPlaybackOutcome::Completed) {
+                    acknowledgement =
+                        lva::cortana::SerializePlaybackCompleted(
+                            result->turn_id);
+                } else {
+                    acknowledgement = lva::cortana::SerializePlaybackStopped(
+                        result->turn_id,
+                        result->outcome ==
+                                lva::audio::RawPlaybackOutcome::Error
+                            ? "playback_error"
+                            : "playback_stopped");
+                }
+                if (pending_playback_acks.size() >= 16) {
+                    LVA_LOGE(kTag,
+                             "playback acknowledgement queue overflow turn=%s",
+                             result->turn_id.c_str());
+                } else {
+                    pending_playback_acks.push_back({
+                        .generation = playback_generation,
+                        .payload = std::move(acknowledgement),
+                    });
+                }
+            }
+            if (result->outcome !=
+                    lva::audio::RawPlaybackOutcome::Started &&
+                pending_playback_stop.has_value() &&
+                pending_playback_stop->generation == snapshot.generation &&
+                pending_playback_stop->turn_id == result->turn_id) {
+                if (pending_playback_stop->notify_muted) {
+                    if (pending_playback_acks.size() < 16) {
+                        pending_playback_acks.push_back({
+                            .generation = pending_playback_stop->generation,
+                            .payload =
+                                lva::cortana::SerializeMuteChanged(true),
+                        });
+                        mute_synced_generation =
+                            pending_playback_stop->generation;
+                    } else {
+                        LVA_LOGE(kTag,
+                                 "mute notification queue overflow turn=%s",
+                                 result->turn_id.c_str());
+                    }
+                }
+                pending_playback_stop.reset();
+            }
+            if (result->outcome !=
+                    lva::audio::RawPlaybackOutcome::Started &&
+                result->turn_id == playback_turn_id) {
+                playback_generation = 0;
+                playback_turn_id.clear();
+            }
             LVA_LOGI(kTag, "playback turn=%s outcome=%s%s%s",
                      result->turn_id.c_str(), outcome,
                      result->detail.empty() ? "" : " detail=",
                      result->detail.c_str());
         }
+        while (!pending_playback_acks.empty()) {
+            const auto& acknowledgement = pending_playback_acks.front();
+            if (snapshot.phase != lva::cortana::SessionPhase::Ready ||
+                acknowledgement.generation != snapshot.generation) {
+                pending_playback_acks.pop_front();
+                continue;
+            }
+            if (!session.EnqueueText(acknowledgement.payload)) break;
+            pending_playback_acks.pop_front();
+        }
         (void)ingress.Pump(snapshot, muted);
-        ApplyLedState(snapshot, leds);
+        lva::tr::EndpointLedPolicy::Apply(endpoint_state.Snapshot(), leds);
         if (snapshot.phase != logged_phase) {
             logged_phase = snapshot.phase;
             LVA_LOGI(kTag, "Cortana session phase=%.*s generation=%llu%s%s",
@@ -568,6 +678,8 @@ int main(int argc, char** argv) {
         }
         if (snapshot.phase == lva::cortana::SessionPhase::Ready &&
             mute_synced_generation != snapshot.generation &&
+            (!pending_playback_stop.has_value() ||
+             !pending_playback_stop->notify_muted) &&
             session.EnqueueText(lva::cortana::SerializeMuteChanged(muted))) {
             mute_synced_generation = snapshot.generation;
         }
