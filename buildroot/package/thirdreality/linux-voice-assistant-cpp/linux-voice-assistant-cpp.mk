@@ -16,21 +16,8 @@ LINUX_VOICE_ASSISTANT_CPP_LICENSE_FILES =
 # change, will back the production AudioCapture's ALSA backend for
 # hardware-loopback AEC). Keep it explicit even though pulseaudio /
 # webrtc-audio-processing already pull it transitively.
-LINUX_VOICE_ASSISTANT_CPP_DEPENDENCIES = json-for-modern-cpp mpv webrtc-audio-processing libcurl alsa-lib
+LINUX_VOICE_ASSISTANT_CPP_DEPENDENCIES = json-for-modern-cpp pulseaudio webrtc-audio-processing libcurl alsa-lib
 
 LINUX_VOICE_ASSISTANT_CPP_CONF_OPTS =
-
-# Install the vendored UI sound effects (thinking/processing,
-# timer ring, mute toggle). Originally lived in
-# the Python LVA package's `sounds/` directory; ship our own copy so
-# we don't depend on that package being selected.
-define LINUX_VOICE_ASSISTANT_CPP_INSTALL_SOUNDS
-	$(INSTALL) -d $(TARGET_DIR)/usr/share/thirdreality/sounds
-	cp -f $(LINUX_VOICE_ASSISTANT_CPP_PKGDIR)/sounds/*.wav \
-	      $(LINUX_VOICE_ASSISTANT_CPP_PKGDIR)/sounds/*.flac \
-	      $(TARGET_DIR)/usr/share/thirdreality/sounds/
-endef
-LINUX_VOICE_ASSISTANT_CPP_POST_INSTALL_TARGET_HOOKS += \
-	LINUX_VOICE_ASSISTANT_CPP_INSTALL_SOUNDS
 
 $(eval $(cmake-package))

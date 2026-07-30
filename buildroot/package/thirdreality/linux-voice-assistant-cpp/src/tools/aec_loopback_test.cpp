@@ -27,7 +27,7 @@
 //
 // What it does NOT do
 // -------------------
-//   * Does not touch PulseAudio. Run this with PA still serving mpv / TTS so
+//   * Does not touch PulseAudio. Run this with PA still serving raw TTS so
 //     the speaker is producing real playback that ends up in ch3/ch4 of
 //     hw:0,4.
 //   * Does not load any wake-word model. Pure capture + APM verification.

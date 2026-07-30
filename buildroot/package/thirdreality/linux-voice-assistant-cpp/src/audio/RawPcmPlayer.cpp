@@ -45,7 +45,7 @@ RawPcmPlayer::~RawPcmPlayer() {
 
 bool RawPcmPlayer::ValidFormat(const PcmFormat& format) {
     return format.encoding == "pcm_s16le" && format.sample_width == 2 &&
-        format.sample_rate >= 8000 && format.sample_rate <= 192000 &&
+        format.sample_rate >= 8000 && format.sample_rate <= 48000 &&
         format.channels >= 1 && format.channels <= 2;
 }
 

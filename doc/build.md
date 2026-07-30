@@ -981,6 +981,14 @@ hardware button owns its own mute LED. Host coverage is in
 - Run dependency-graph, host-protocol, player, and absence checks here. Defer
   the expensive full image build until T4.4 so one build validates both tickets.
 
+Implementation removes the unused libmpv adapter/interface, native endpoint
+MPV dependency, explicit MPV/FFmpeg defconfig selections, four unreferenced
+sound assets, and their target install hook. PulseAudio remains selected for
+bounded raw PCM. Both protocol parsing and playback reject response formats
+above 48 kHz. Run `script/test_no_legacy_media.sh` for the static dependency,
+asset, and format-ceiling guard; target graph/rootfs confirmation remains part
+of the combined T4.3/T4.4 image build.
+
 #### T4.4 Extract the endpoint runtime coordinator — Medium
 
 - Follow Halo's controller/transport/player boundary by moving server-event

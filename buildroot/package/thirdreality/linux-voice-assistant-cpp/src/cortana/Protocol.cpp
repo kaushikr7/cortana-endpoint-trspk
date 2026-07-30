@@ -440,7 +440,7 @@ ServerEvent ParseServerEvent(std::string_view payload) {
             .channels = value.at("channels").get<int>(),
         };
         if (result.encoding != "pcm_s16le" || result.sample_width != 2 ||
-            result.sample_rate < 8000 || result.sample_rate > 192000 ||
+            result.sample_rate < 8000 || result.sample_rate > 48000 ||
             result.channels < 1 || result.channels > 2) {
             throw ProtocolError("unsupported output audio format");
         }

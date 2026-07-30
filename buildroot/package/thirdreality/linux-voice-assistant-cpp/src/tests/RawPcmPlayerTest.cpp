@@ -236,6 +236,9 @@ void TestFormatAndTurnValidation() {
     auto invalid = Format();
     invalid.encoding = "mp3";
     assert(!player.Begin("turn-4", invalid));
+    invalid = Format();
+    invalid.sample_rate = 96000;
+    assert(!player.Begin("turn-4", invalid));
     assert(player.Begin("turn-4", Format()));
     assert(!player.Enqueue("wrong-turn", Samples(4, '\x77')));
     assert(!player.Enqueue("turn-4", Samples(3, '\x77')));

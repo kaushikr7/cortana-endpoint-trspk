@@ -20,10 +20,6 @@ find_package(PkgConfig REQUIRED)
 # cost). Provides the imported target `nlohmann_json::nlohmann_json`.
 find_package(nlohmann_json CONFIG REQUIRED)
 
-# libmpv: temporary legacy media dependency pending the playback purge.
-pkg_check_modules(MPV REQUIRED IMPORTED_TARGET mpv)
-message(STATUS "Found mpv ${MPV_VERSION} via pkg-config")
-
 # libpulse-simple: retained for the bounded raw playback implementation.
 pkg_check_modules(PULSE_SIMPLE REQUIRED IMPORTED_TARGET libpulse-simple)
 message(STATUS "Found libpulse-simple ${PULSE_SIMPLE_VERSION} via pkg-config")
@@ -52,7 +48,6 @@ add_executable(linux-voice-assistant-cpp
     src/cortana/Protocol.cpp
     src/cortana/SessionClient.cpp
     src/state/Preferences.cpp
-    src/audio/LibMpvPlayer.cpp
     src/audio/PulseAudioSink.cpp
     src/audio/RawPcmPlayer.cpp
     src/audio/PcmRingBuffer.cpp
@@ -82,7 +77,6 @@ find_package(Threads REQUIRED)
 target_link_libraries(linux-voice-assistant-cpp
     PRIVATE
         nlohmann_json::nlohmann_json
-        PkgConfig::MPV
         PkgConfig::PULSE_SIMPLE
         PkgConfig::ALSA
         PkgConfig::WEBRTC_APM

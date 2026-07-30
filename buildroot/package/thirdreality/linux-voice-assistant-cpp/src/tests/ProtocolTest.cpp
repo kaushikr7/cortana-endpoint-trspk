@@ -129,6 +129,8 @@ void TestStrictServerParsing() {
     };
     assert(std::holds_alternative<OutputAudioStart>(
         ParseServerEvent(audio.dump())));
+    audio["sampleRate"] = 96000;
+    ExpectProtocolError([&audio] { (void)ParseServerEvent(audio.dump()); });
 
     Json extra = SessionReadyJson();
     extra["unexpected"] = true;
