@@ -57,6 +57,7 @@ These checks do not build firmware or access a device:
 ./script/test_device_ticket.sh
 ./script/test_cortana_session.sh
 ./script/test_capture_pipeline.sh
+./script/test_netmonitor.sh
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
   -s tools/tests -p 'test_*.py'
 ```

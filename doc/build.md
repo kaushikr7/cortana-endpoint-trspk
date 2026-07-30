@@ -888,6 +888,9 @@ mute, bounds, scripted backpressure, and reconnect isolation.
 
 - Verify 16 kHz mono PCM16, frame rate, bytes per second, dropped frames, AEC
   reference, CPU, memory, mute, Wi-Fi loss, and reconnect on the speaker.
+- If Wi-Fi reassociates without a usable IPv4 default route, the retained
+  network monitor must restart DHCP with a cooldown and allow Cortana to obtain
+  a fresh ticket without a device reboot.
 - Record representative speech at realistic near- and far-field distances and
   inspect PCM RMS, peaks, clipping, and server recognition reliability. Confirm
   the WebRTC digital gain provides adequate microphone sensitivity; tune or

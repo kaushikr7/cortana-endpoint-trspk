@@ -10,6 +10,8 @@ INTERVAL_SSID=3
 
 WIFI_FAIL_THRESHOLD=2
 INTERNET_FAIL_THRESHOLD=3
+DHCP_REPAIR_COOLDOWN=15
+LAST_DHCP_REPAIR=0
 
 CONNECTIVITY_CHECK_URL1="http://connectivitycheck.gstatic.com/generate_204"
 CONNECTIVITY_CHECK_URL2="http://captive.apple.com/hotspot-detect.html"
@@ -54,6 +56,25 @@ set_state_artifacts()
 linkReadyCheck()
 {
     [ -n "$(get_valid_ipv4_address)" ] && has_default_route
+}
+
+repair_link_configuration()
+{
+    local now
+
+    now="${1:-$(date +%s)}"
+    if [ $((now - LAST_DHCP_REPAIR)) -lt $DHCP_REPAIR_COOLDOWN ]; then
+        return 0
+    fi
+
+    LAST_DHCP_REPAIR=$now
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] WiFi associated without a usable IPv4 route; restarting DHCP"
+    restart_dhcp_client
+}
+
+restart_dhcp_client()
+{
+    /etc/init.d/S41dhcpcd restart
 }
 
 ensure_dns_config()
@@ -196,6 +217,13 @@ netCheckState()
             sleep "$check_interval"
             continue
         fi
+
+        if ! linkReadyCheck; then
+            repair_link_configuration
+            # Recheck promptly while DHCP restores the address, default route,
+            # and DNS instead of waiting for the normal connected interval.
+            check_interval="$INTERVAL_SSID"
+        fi
         
         if connectivityCheck; then
             internet_connected=true
@@ -235,4 +263,6 @@ netCheckState()
    
 }
 
-netCheckState
+if [ "${NETMONITOR_LIBRARY_ONLY:-0}" != "1" ]; then
+    netCheckState
+fi
