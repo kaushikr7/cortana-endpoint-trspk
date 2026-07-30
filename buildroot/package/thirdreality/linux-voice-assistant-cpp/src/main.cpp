@@ -17,12 +17,14 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 #include <utility>
 
 #include <nlohmann/json.hpp>
 
 #include "audio/CapturePipeline.h"
 #include "audio/MicrophoneIngress.h"
+#include "audio/RawPcmPlayer.h"
 #include "config/EndpointConfig.h"
 #include "cortana/CurlSessionTransport.h"
 #include "cortana/Protocol.h"
@@ -326,6 +328,61 @@ std::string NewManualActivationId(std::uint64_t sequence) {
         std::to_string(sequence);
 }
 
+const char* PlaybackStateName(lva::audio::RawPlaybackState state) {
+    switch (state) {
+        case lva::audio::RawPlaybackState::Idle: return "idle";
+        case lva::audio::RawPlaybackState::Playing: return "playing";
+        case lva::audio::RawPlaybackState::Draining: return "draining";
+        case lva::audio::RawPlaybackState::Error: return "error";
+    }
+    return "error";
+}
+
+void HandlePlaybackEvent(const lva::cortana::SessionEvent& event,
+                         lva::audio::RawPcmPlayer& player) {
+    std::visit(
+        [&player](const auto& value) {
+            using Event = std::decay_t<decltype(value)>;
+            if constexpr (std::is_same_v<Event,
+                                         lva::cortana::OutputAudioStart>) {
+                const bool accepted = player.Begin(
+                    value.turn_id,
+                    lva::audio::PcmFormat{
+                        .encoding = value.encoding,
+                        .sample_rate = value.sample_rate,
+                        .sample_width = value.sample_width,
+                        .channels = value.channels,
+                    });
+                if (!accepted) {
+                    LVA_LOGE(kTag, "rejected audio.start turn=%s",
+                             value.turn_id.c_str());
+                    player.Stop(value.turn_id, "invalid_audio_start");
+                }
+            } else if constexpr (
+                std::is_same_v<Event, lva::cortana::OutputAudioChunk>) {
+                if (!player.Enqueue(value.turn_id, value.payload)) {
+                    LVA_LOGE(kTag, "playback queue rejected %zu bytes turn=%s",
+                             value.payload.size(), value.turn_id.c_str());
+                    player.Stop(value.turn_id, "playback_overloaded");
+                }
+            } else if constexpr (
+                std::is_same_v<Event, lva::cortana::OutputAudioEnd>) {
+                if (!player.End(value.turn_id)) {
+                    LVA_LOGW(kTag, "ignored audio.end turn=%s",
+                             value.turn_id.c_str());
+                }
+            } else if constexpr (
+                std::is_same_v<Event, lva::cortana::PlaybackStop>) {
+                player.Stop(value.turn_id, value.reason);
+            } else if constexpr (
+                std::is_same_v<Event, lva::cortana::TurnCancelled>) {
+                player.Stop(value.turn_id.value_or(std::string{}),
+                            value.reason.value_or("turn_cancelled"));
+            }
+        },
+        event.event);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -375,6 +432,16 @@ int main(int argc, char** argv) {
     lva::cortana::SessionClient session(config, std::move(dependencies));
     session.Start();
 
+    lva::audio::RawPcmPlayer player(
+        lva::audio::RawPcmPlayer::Options{},
+        [] {
+            // This is the PulseAudio sink backed by ALSA hw:0,1. The codec's
+            // hardware loopback exposes the same output on capture channels
+            // 2/3 for AEC.
+            return lva::audio::MakePulseAudioSink(
+                "alsa_output.hw_0_1");
+        });
+
     lva::audio::CapturePipeline::Options capture_options;
     capture_options.capture.alsa_device = cli.capture_alsa_device;
     capture_options.capture.mic_channel = cli.capture_mic_channel;
@@ -396,11 +463,14 @@ int main(int argc, char** argv) {
 
     bool muted = false;
     lva::tr::MicMuteGpio mute_gpio(
-        [&session, &capture, &muted](
+        [&session, &capture, &player, &muted](
             bool new_muted, lva::tr::MuteChangeSource) {
             muted = new_muted;
             session.SetMicrophoneMuted(new_muted);
-            if (new_muted) (void)capture.DiscardQueued();
+            if (new_muted) {
+                (void)capture.DiscardQueued();
+                player.Stop({}, "muted");
+            }
             (void)session.EnqueueText(
                 lva::cortana::SerializeMuteChanged(new_muted));
         });
@@ -409,7 +479,8 @@ int main(int argc, char** argv) {
     std::uint64_t activation_sequence = 0;
     lva::tr::HomeButton home_button(
         lva::tr::HomeButton::Options{},
-        [&session, &activation_sequence](lva::tr::HomeButtonPress press) {
+        [&session, &player,
+         &activation_sequence](lva::tr::HomeButtonPress press) {
             const auto snapshot = session.Snapshot();
             const auto action = lva::tr::PhysicalControlPolicy::OnHomeButton(
                 press, EndpointActivityFor(snapshot));
@@ -417,6 +488,7 @@ int main(int argc, char** argv) {
                 (void)session.EnqueueText(lva::cortana::SerializeWakeManual(
                     NewManualActivationId(++activation_sequence)));
             } else if (action == lva::tr::ControlAction::CancelTurn) {
+                player.Stop({}, "user_cancelled");
                 (void)session.EnqueueText(lva::cortana::SerializeTurnCancel(
                     std::nullopt, lva::cortana::CancellationSource::Physical,
                     "user_cancelled"));
@@ -430,6 +502,7 @@ int main(int argc, char** argv) {
     lva::cortana::SessionPhase logged_phase =
         lva::cortana::SessionPhase::Stopped;
     std::uint64_t mute_synced_generation = 0;
+    std::uint64_t playback_generation = 0;
     auto next_capture_metrics = std::chrono::steady_clock::now() + 30s;
     while (g_shutdown_signal.load(std::memory_order_relaxed) == 0) {
         if (home_button_fd >= 0) {
@@ -451,10 +524,37 @@ int main(int argc, char** argv) {
 
         mute_gpio.Poll();
         leds.Poll();
-        while (session.TryPopEvent().has_value()) {
+        while (const auto event = session.TryPopEvent()) {
+            const auto current = session.Snapshot();
+            if (event->generation != current.generation) continue;
+            HandlePlaybackEvent(*event, player);
+            if (std::holds_alternative<lva::cortana::OutputAudioStart>(
+                    event->event)) {
+                playback_generation = event->generation;
+            }
         }
 
         const auto snapshot = session.Snapshot();
+        if (playback_generation != 0 &&
+            (snapshot.phase != lva::cortana::SessionPhase::Ready ||
+             snapshot.generation != playback_generation)) {
+            player.Stop({}, "session_disconnected");
+            playback_generation = 0;
+        }
+        while (const auto result = player.TryPopResult()) {
+            const char* outcome = "error";
+            if (result->outcome ==
+                lva::audio::RawPlaybackOutcome::Completed) {
+                outcome = "completed";
+            } else if (result->outcome ==
+                       lva::audio::RawPlaybackOutcome::Stopped) {
+                outcome = "stopped";
+            }
+            LVA_LOGI(kTag, "playback turn=%s outcome=%s%s%s",
+                     result->turn_id.c_str(), outcome,
+                     result->detail.empty() ? "" : " detail=",
+                     result->detail.c_str());
+        }
         (void)ingress.Pump(snapshot, muted);
         ApplyLedState(snapshot, leds);
         if (snapshot.phase != logged_phase) {
@@ -476,6 +576,7 @@ int main(int argc, char** argv) {
             next_capture_metrics = now + 30s;
             const auto metrics = capture.GetMetrics();
             const auto ingress_metrics = ingress.GetMetrics();
+            const auto playback_metrics = player.Snapshot();
             LVA_LOGI(kTag,
                      "capture running=%d periods=%llu samples=%llu "
                      "reference_periods=%llu queue=%zu/%zu high=%zu "
@@ -483,7 +584,10 @@ int main(int argc, char** argv) {
                      "short_reads=%llu processing_failures=%llu max_us=%llu "
                      "frames_enqueued=%llu frames_rejected=%llu "
                      "session_queue=%zu session_sent=%llu session_dropped=%llu "
-                     "overload_reconnects=%llu generation=%llu",
+                     "overload_reconnects=%llu generation=%llu "
+                     "playback_state=%s playback_queue=%zu playback_high=%zu "
+                     "playback_written=%llu playback_rejected=%llu "
+                     "playback_discarded=%llu playback_errors=%llu",
                      metrics.running ? 1 : 0,
                      static_cast<unsigned long long>(metrics.periods_captured),
                      static_cast<unsigned long long>(metrics.samples_captured),
@@ -512,7 +616,18 @@ int main(int argc, char** argv) {
                          snapshot.dropped_audio_frames),
                      static_cast<unsigned long long>(
                          snapshot.audio_overload_reconnects),
-                     static_cast<unsigned long long>(snapshot.generation));
+                     static_cast<unsigned long long>(snapshot.generation),
+                     PlaybackStateName(playback_metrics.state),
+                     playback_metrics.queued_bytes,
+                     playback_metrics.queue_high_watermark,
+                     static_cast<unsigned long long>(
+                         playback_metrics.bytes_written),
+                     static_cast<unsigned long long>(
+                         playback_metrics.bytes_rejected),
+                     static_cast<unsigned long long>(
+                         playback_metrics.bytes_discarded),
+                     static_cast<unsigned long long>(
+                         playback_metrics.errors));
         }
     }
 

@@ -284,6 +284,13 @@ bool WaitUntil(std::function<bool()> predicate,
     return predicate();
 }
 
+void PushInbound(const std::shared_ptr<ConnectionState>& state,
+                 WebSocketMessage message) {
+    std::lock_guard lock(state->mutex);
+    state->inbound.push_back(std::move(message));
+    state->condition.notify_all();
+}
+
 void TestHandshakeAndEndpoint() {
     auto dependencies =
         std::make_shared<FakeDependencies>(std::vector<ConnectionPlan>{{}});
@@ -340,6 +347,81 @@ void TestAudioGenerationMuteAndBackpressure() {
         std::lock_guard lock(state->mutex);
         state->release_binary = true;
         state->condition.notify_all();
+    }
+    client->Stop();
+}
+
+void TestBoundedOutputAudioEvents() {
+    auto options = FastOptions();
+    options.maximum_output_audio_chunk_bytes = 8;
+    auto dependencies =
+        std::make_shared<FakeDependencies>(std::vector<ConnectionPlan>{{}});
+    auto client = MakeClient(dependencies, options);
+    client->Start();
+    assert(client->WaitForPhase(SessionPhase::Ready, 1s));
+    assert(WaitUntil([&] { return client->TryPopEvent().has_value(); }));
+    const auto state = dependencies->State(0);
+    assert(state);
+
+    PushInbound(state, {
+        .kind = WebSocketMessageKind::Text,
+        .payload = R"({"type":"audio.start","turnId":"turn-1","encoding":"pcm_s16le","sampleRate":24000,"sampleWidth":2,"channels":1})",
+        .close_code = 0,
+        .close_reason = {},
+    });
+    PushInbound(state, {
+        .kind = WebSocketMessageKind::Binary,
+        .payload = std::string("\x01\x02\x03\x04", 4),
+        .close_code = 0,
+        .close_reason = {},
+    });
+    PushInbound(state, {
+        .kind = WebSocketMessageKind::Text,
+        .payload = R"({"type":"audio.end","turnId":"turn-1"})",
+        .close_code = 0,
+        .close_reason = {},
+    });
+
+    std::vector<lva::cortana::SessionEvent> events;
+    assert(WaitUntil([&] {
+        while (auto event = client->TryPopEvent()) {
+            events.push_back(std::move(*event));
+        }
+        return events.size() == 3;
+    }));
+    assert(std::holds_alternative<lva::cortana::OutputAudioStart>(
+        events[0].event));
+    const auto& chunk =
+        std::get<lva::cortana::OutputAudioChunk>(events[1].event);
+    assert(chunk.turn_id == "turn-1");
+    assert(chunk.payload == std::string("\x01\x02\x03\x04", 4));
+    assert(std::holds_alternative<lva::cortana::OutputAudioEnd>(
+        events[2].event));
+    client->Stop();
+}
+
+void TestOutOfSequenceOutputAudioReconnects() {
+    auto dependencies = std::make_shared<FakeDependencies>(
+        std::vector<ConnectionPlan>{{}, {}});
+    auto client = MakeClient(dependencies);
+    client->Start();
+    assert(client->WaitForPhase(SessionPhase::Ready, 1s));
+    const auto first_generation = client->Snapshot().generation;
+    const auto first = dependencies->State(0);
+    assert(first);
+    PushInbound(first, {
+        .kind = WebSocketMessageKind::Binary,
+        .payload = std::string("\x01\x02", 2),
+        .close_code = 0,
+        .close_reason = {},
+    });
+    assert(WaitUntil([&] {
+        return client->Snapshot().generation > first_generation;
+    }));
+    {
+        std::lock_guard lock(first->mutex);
+        assert(first->client_close.has_value());
+        assert(first->client_close->first == 1002);
     }
     client->Stop();
 }
@@ -605,6 +687,8 @@ void TestBackoffAndUrlValidation() {
 int main() {
     TestHandshakeAndEndpoint();
     TestAudioGenerationMuteAndBackpressure();
+    TestBoundedOutputAudioEvents();
+    TestOutOfSequenceOutputAudioReconnects();
     TestReconnectDropsOldAudioGeneration();
     TestPersistentAudioOverloadReconnects();
     TestTransportFailureClearsPendingOverloadReconnect();

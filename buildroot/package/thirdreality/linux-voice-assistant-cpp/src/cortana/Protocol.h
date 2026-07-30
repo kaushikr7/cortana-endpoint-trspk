@@ -90,6 +90,10 @@ struct OutputAudioStart {
     int channels;
 };
 struct OutputAudioEnd { std::string turn_id; };
+struct OutputAudioChunk {
+    std::string turn_id;
+    std::string payload;
+};
 struct PlaybackStop {
     std::string turn_id;
     CancellationSource source;
@@ -119,6 +123,7 @@ using ServerEvent = std::variant<
     ResponseCompleted,
     OutputAudioStart,
     OutputAudioEnd,
+    OutputAudioChunk,
     PlaybackStop,
     TurnCancelled,
     ErrorEvent>;

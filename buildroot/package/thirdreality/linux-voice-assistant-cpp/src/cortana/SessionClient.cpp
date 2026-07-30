@@ -95,6 +95,7 @@ SessionClient::SessionClient(
     if (!dependencies_ || !clock_ || !jitter_ ||
         options_.maximum_queued_commands == 0 ||
         options_.maximum_queued_events == 0 ||
+        options_.maximum_output_audio_chunk_bytes == 0 ||
         options_.maximum_queued_audio_frames == 0 ||
         options_.maximum_audio_overload_strikes == 0 ||
         options_.audio_overload_window <= std::chrono::milliseconds::zero() ||
@@ -327,6 +328,7 @@ void SessionClient::RunConnection(const DeviceTicket& ticket,
     std::optional<std::string> pending_ping;
     std::uint64_t ping_sequence = 0;
     bool ready = false;
+    std::optional<std::string> output_audio_turn;
 
     while (!StopRequested()) {
         {
@@ -411,69 +413,98 @@ void SessionClient::RunConnection(const DeviceTicket& ticket,
                 throw ClosedSessionError(
                     message->close_code, message->close_reason);
             }
-            if (message->kind != WebSocketMessageKind::Text) {
-                transport.Close(1002, "unexpected binary message");
-                throw SessionTransportError(
-                    "unexpected binary message before playback support");
-            }
-
-            ServerEvent event;
-            try {
-                event = ParseServerEvent(message->payload);
-            } catch (const ProtocolError& error) {
-                transport.Close(1002, "invalid voice protocol");
-                throw SessionTransportError(error.what());
-            }
-
-            if (!ready) {
-                if (const auto* session_ready =
-                        std::get_if<SessionReady>(&event)) {
-                    SetReady(*session_ready, ticket);
-                    transport.SendText(SerializeAudioStart());
-                    {
-                        std::lock_guard lock(mutex_);
-                        snapshot_.audio_started = true;
-                    }
-                    condition_.notify_all();
-                    ready = true;
-                    next_ping = clock_() + options_.ping_interval;
-                    PushEvent(std::move(event));
-                } else if (const auto* rejected =
-                               std::get_if<ErrorEvent>(&event)) {
-                    throw TerminalSessionError(
-                        "Cortana rejected session negotiation: " +
-                        rejected->code);
-                } else {
-                    transport.Close(1002, "invalid handshake event");
+            if (message->kind == WebSocketMessageKind::Binary) {
+                if (!ready || !output_audio_turn.has_value() ||
+                    message->payload.empty() ||
+                    message->payload.size() >
+                        options_.maximum_output_audio_chunk_bytes) {
+                    transport.Close(1002, "invalid output audio frame");
                     throw SessionTransportError(
-                        "Cortana sent an event before session.ready");
+                        "Cortana sent invalid or out-of-sequence output audio");
                 }
+                PushEvent(OutputAudioChunk{
+                    .turn_id = *output_audio_turn,
+                    .payload = std::move(message->payload),
+                });
             } else {
-                if (std::holds_alternative<SessionReady>(event)) {
-                    transport.Close(1002, "duplicate session.ready");
-                    throw SessionTransportError(
-                        "Cortana sent duplicate session.ready");
+                ServerEvent event;
+                try {
+                    event = ParseServerEvent(message->payload);
+                } catch (const ProtocolError& error) {
+                    transport.Close(1002, "invalid voice protocol");
+                    throw SessionTransportError(error.what());
                 }
-                bool keepalive_reply = false;
-                if (const auto* health = std::get_if<SessionHealth>(&event)) {
-                    {
-                        std::lock_guard lock(mutex_);
-                        snapshot_.health = health->health;
-                        snapshot_.activity = health->activity;
+
+                if (!ready) {
+                    if (const auto* session_ready =
+                            std::get_if<SessionReady>(&event)) {
+                        SetReady(*session_ready, ticket);
+                        transport.SendText(SerializeAudioStart());
+                        {
+                            std::lock_guard lock(mutex_);
+                            snapshot_.audio_started = true;
+                        }
+                        condition_.notify_all();
+                        ready = true;
+                        next_ping = clock_() + options_.ping_interval;
+                        PushEvent(std::move(event));
+                    } else if (const auto* rejected =
+                                   std::get_if<ErrorEvent>(&event)) {
+                        throw TerminalSessionError(
+                            "Cortana rejected session negotiation: " +
+                            rejected->code);
+                    } else {
+                        transport.Close(1002, "invalid handshake event");
+                        throw SessionTransportError(
+                            "Cortana sent an event before session.ready");
                     }
-                    if (pending_ping.has_value() && health->nonce == pending_ping) {
-                        keepalive_reply = true;
-                        pending_ping.reset();
-                        ping_deadline = SteadyClock::time_point::max();
+                } else {
+                    if (std::holds_alternative<SessionReady>(event)) {
+                        transport.Close(1002, "duplicate session.ready");
+                        throw SessionTransportError(
+                            "Cortana sent duplicate session.ready");
                     }
-                }
-                const bool terminal_error =
-                    std::holds_alternative<ErrorEvent>(event) &&
-                    !std::get<ErrorEvent>(event).recoverable;
-                if (!keepalive_reply) PushEvent(std::move(event));
-                if (terminal_error) {
-                    throw TerminalSessionError(
-                        "Cortana reported a non-recoverable session error");
+                    if (const auto* start =
+                            std::get_if<OutputAudioStart>(&event)) {
+                        if (output_audio_turn.has_value()) {
+                            transport.Close(1002, "overlapping output audio");
+                            throw SessionTransportError(
+                                "Cortana started overlapping output audio");
+                        }
+                        output_audio_turn = start->turn_id;
+                    } else if (const auto* end =
+                                   std::get_if<OutputAudioEnd>(&event)) {
+                        if (!output_audio_turn.has_value() ||
+                            *output_audio_turn != end->turn_id) {
+                            transport.Close(1002, "mismatched audio.end");
+                            throw SessionTransportError(
+                                "Cortana ended inactive output audio");
+                        }
+                        output_audio_turn.reset();
+                    }
+                    bool keepalive_reply = false;
+                    if (const auto* health =
+                            std::get_if<SessionHealth>(&event)) {
+                        {
+                            std::lock_guard lock(mutex_);
+                            snapshot_.health = health->health;
+                            snapshot_.activity = health->activity;
+                        }
+                        if (pending_ping.has_value() &&
+                            health->nonce == pending_ping) {
+                            keepalive_reply = true;
+                            pending_ping.reset();
+                            ping_deadline = SteadyClock::time_point::max();
+                        }
+                    }
+                    const bool terminal_error =
+                        std::holds_alternative<ErrorEvent>(event) &&
+                        !std::get<ErrorEvent>(event).recoverable;
+                    if (!keepalive_reply) PushEvent(std::move(event));
+                    if (terminal_error) {
+                        throw TerminalSessionError(
+                            "Cortana reported a non-recoverable session error");
+                    }
                 }
             }
         }

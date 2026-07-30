@@ -927,6 +927,21 @@ no on-device wake implementation or model.
   cannot deadlock the session thread.
 - Confirm playback uses the physical output seen by the AEC reference channels.
 
+Implementation uses a dedicated worker with a hard 256 KiB ceiling and a
+format-aware 500 ms application queue for announced PCM16LE mono/stereo
+formats. WebSocket binary chunks are limited to 64 KiB and accepted only
+between matching `audio.start`/`audio.end` events. Writes are split into at
+most 20 ms slices so cancellation cannot sit behind a large received chunk.
+Completion is emitted only after PulseAudio reports an exact drain; stop,
+mute, disconnect, and cancellation discard the application queue and
+interrupt an in-progress drain before flushing. PulseAudio's device buffer is
+limited to about 100 ms. Production playback explicitly selects
+`alsa_output.hw_0_1`, which `/etc/pulse/default.pa` maps to ALSA `hw:0,1`; the
+AEC diagnostic documents and measures that output on capture channels 2/3.
+Run `script/test_pcm_playback.sh` for bounded queue, drain, interrupt, flush,
+format, and error-path coverage. Physical playback/AEC confirmation remains
+part of the next full image acceptance run.
+
 #### T4.2 Turn control, acknowledgements, and LEDs — High
 
 - Implement playback started/completed/stopped acknowledgements after the

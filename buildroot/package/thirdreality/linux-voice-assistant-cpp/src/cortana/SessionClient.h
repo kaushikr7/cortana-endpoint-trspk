@@ -56,6 +56,7 @@ public:
     struct Options {
         std::size_t maximum_queued_commands = 32;
         std::size_t maximum_queued_events = 32;
+        std::size_t maximum_output_audio_chunk_bytes = 64 * 1024;
         std::size_t maximum_queued_audio_frames = 8;
         std::size_t maximum_audio_overload_strikes = 3;
         std::chrono::milliseconds audio_overload_window{2000};
