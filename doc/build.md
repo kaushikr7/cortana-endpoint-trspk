@@ -1038,6 +1038,14 @@ the hardware wiring loop.
 - Treat fixture version/checksum drift as a failing test rather than adding
   endpoint-specific compatibility behavior.
 
+Implementation note: the canonical corpus lives in the private Kensho repo at
+`cortana/testdata/voice_protocol_v1_conformance.json`. Its byte-for-byte public
+export is `testdata/voice_protocol_v1_conformance.json` in this repo. To update
+it, first change and validate the canonical fixture against Cortana and Halo,
+then replace the public copy, update the pinned SHA-256 in all three consumers,
+and run `./script/test_protocol_conformance.sh`. Never export credentials, real
+satellite or area identifiers, transcripts, or recorded PCM.
+
 #### T5.2 Capture lifecycle supervision — Medium
 
 - Follow Halo's microphone-controller lifecycle: distinguish capture starting,

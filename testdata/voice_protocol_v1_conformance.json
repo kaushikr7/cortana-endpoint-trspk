@@ -1,0 +1,179 @@
+{
+  "corpusVersion": 1,
+  "protocolVersion": "1",
+  "microphone": {
+    "encoding": "pcm_s16le",
+    "sampleRate": 16000,
+    "channels": 1,
+    "frameDurationMs": 20,
+    "frameBytes": 640
+  },
+  "capabilities": {
+    "halo": {
+      "endpointKind": "halo",
+      "captureMode": "continuous",
+      "wakeMode": "server",
+      "microphone": {
+        "encoding": "pcm_s16le",
+        "sampleRate": 16000,
+        "channels": 1,
+        "frameDurationMs": 20
+      },
+      "playback": true,
+      "localPreRollMs": 0,
+      "followUpCapture": true,
+      "playbackAcknowledgements": true,
+      "bargeInMode": "wake_word"
+    },
+    "device": {
+      "endpointKind": "device",
+      "captureMode": "continuous",
+      "wakeMode": "server",
+      "microphone": {
+        "encoding": "pcm_s16le",
+        "sampleRate": 16000,
+        "channels": 1,
+        "frameDurationMs": 20
+      },
+      "playback": true,
+      "localPreRollMs": 0,
+      "followUpCapture": true,
+      "playbackAcknowledgements": true,
+      "bargeInMode": "none"
+    }
+  },
+  "ticket": {
+    "ticket": "fixture-ticket-00000000000000000000000000000000",
+    "expiresAt": 2000000000,
+    "endpoint": "wss://cortana.example/api/v1/voice/session",
+    "protocolVersion": "1",
+    "satellite": {
+      "satelliteId": "fixture-halo",
+      "areaId": "fixture-area",
+      "label": "Fixture Halo"
+    }
+  },
+  "sessionReady": {
+    "halo": {
+      "type": "session.ready",
+      "sessionId": "fixture-session-halo",
+      "protocolVersion": "1",
+      "satellite": {
+        "satelliteId": "fixture-halo",
+        "areaId": "fixture-area",
+        "label": "Fixture Halo"
+      },
+      "capabilities": {
+        "endpointKind": "halo",
+        "captureMode": "continuous",
+        "wakeMode": "server",
+        "microphone": {
+          "encoding": "pcm_s16le",
+          "sampleRate": 16000,
+          "channels": 1,
+          "frameDurationMs": 20
+        },
+        "playback": true,
+        "localPreRollMs": 0,
+        "followUpCapture": true,
+        "playbackAcknowledgements": true,
+        "bargeInMode": "wake_word"
+      },
+      "microphone": {
+        "encoding": "pcm_s16le",
+        "sampleRate": 16000,
+        "channels": 1,
+        "frameDurationMs": 20
+      },
+      "health": "ready",
+      "activity": "armed"
+    },
+    "device": {
+      "type": "session.ready",
+      "sessionId": "fixture-session-device",
+      "protocolVersion": "1",
+      "satellite": {
+        "satelliteId": "fixture-device",
+        "areaId": "fixture-area",
+        "label": "Fixture Device"
+      },
+      "capabilities": {
+        "endpointKind": "device",
+        "captureMode": "continuous",
+        "wakeMode": "server",
+        "microphone": {
+          "encoding": "pcm_s16le",
+          "sampleRate": 16000,
+          "channels": 1,
+          "frameDurationMs": 20
+        },
+        "playback": true,
+        "localPreRollMs": 0,
+        "followUpCapture": true,
+        "playbackAcknowledgements": true,
+        "bargeInMode": "none"
+      },
+      "microphone": {
+        "encoding": "pcm_s16le",
+        "sampleRate": 16000,
+        "channels": 1,
+        "frameDurationMs": 20
+      },
+      "health": "ready",
+      "activity": "armed"
+    }
+  },
+  "clientEvents": {
+    "valid": [
+      {"type": "session.authenticate", "protocolVersion": "1", "ticket": "fixture-ticket-00000000000000000000000000000000"},
+      {"type": "session.capabilities", "capabilities": {"endpointKind": "device", "captureMode": "continuous", "wakeMode": "server", "microphone": {"encoding": "pcm_s16le", "sampleRate": 16000, "channels": 1, "frameDurationMs": 20}, "playback": true, "localPreRollMs": 0, "followUpCapture": true, "playbackAcknowledgements": true, "bargeInMode": "none"}},
+      {"type": "audio.start", "encoding": "pcm_s16le", "sampleRate": 16000, "channels": 1, "frameDurationMs": 20},
+      {"type": "audio.stop"},
+      {"type": "wake.manual", "activationId": "manual-fixture"},
+      {"type": "turn.cancel", "turnId": "turn-fixture", "source": "physical", "reason": "user_cancelled"},
+      {"type": "playback.started", "turnId": "turn-fixture"},
+      {"type": "playback.completed", "turnId": "turn-fixture"},
+      {"type": "playback.stopped", "turnId": "turn-fixture", "reason": "playback_stopped"},
+      {"type": "mute.changed", "muted": true},
+      {"type": "session.ping", "nonce": "fixture-ping"}
+    ],
+    "invalid": [
+      {"type": "mute.changed", "muted": true, "unexpected": true},
+      {"type": "audio.start", "encoding": "pcm_s16le", "sampleRate": 48000, "channels": 1, "frameDurationMs": 20},
+      {"type": "wake.manual", "activationId": "invalid identifier"},
+      {"type": "turn.cancel", "turnId": "turn-fixture", "source": "keyboard", "reason": "user_cancelled"},
+      {"type": "future.client.event"}
+    ]
+  },
+  "serverEvents": {
+    "valid": [
+      {"type": "session.health", "health": "ready", "activity": "armed", "nonce": "fixture-ping"},
+      {"type": "wake.accepted", "activationId": "manual-fixture", "turnId": "turn-fixture"},
+      {"type": "wake.suppressed", "activationId": "manual-fixture", "reason": "satellite_busy"},
+      {"type": "speech.started", "turnId": "turn-fixture"},
+      {"type": "speech.ended", "turnId": "turn-fixture"},
+      {"type": "transcript.final", "turnId": "turn-fixture", "text": ""},
+      {"type": "response.started", "turnId": "turn-fixture"},
+      {"type": "response.text", "turnId": "turn-fixture", "text": ""},
+      {"type": "audio.start", "turnId": "turn-fixture", "encoding": "pcm_s16le", "sampleRate": 24000, "sampleWidth": 2, "channels": 1},
+      {"type": "audio.end", "turnId": "turn-fixture"},
+      {"type": "response.completed", "turnId": "turn-fixture"},
+      {"type": "playback.stop", "turnId": "turn-fixture", "source": "physical", "reason": "user_cancelled"},
+      {"type": "turn.cancelled", "turnId": "turn-fixture", "source": "mute", "reason": "microphone_muted"},
+      {"type": "error", "error": {"code": "fixture_error", "message": "Fixture error", "recoverable": true}}
+    ],
+    "invalid": [
+      {"type": "session.health", "health": "ready", "activity": "armed", "unexpected": true},
+      {"type": "audio.start", "turnId": "turn-fixture", "encoding": "pcm_s16le", "sampleRate": 96000, "sampleWidth": 2, "channels": 1},
+      {"type": "playback.stop", "turnId": "turn-fixture", "source": "keyboard", "reason": "user_cancelled"},
+      {"type": "speech.started"},
+      {"type": "future.server.event"}
+    ]
+  },
+  "ordering": {
+    "responsePlayback": ["audio.start", "binary", "audio.end", "playback.started", "playback.completed"],
+    "physicalPlaybackCancel": ["playback.stopped"],
+    "mutePlaybackCancel": ["playback.stopped", "mute.changed"],
+    "reconnectRule": "never acknowledge a result from an older generation"
+  }
+}

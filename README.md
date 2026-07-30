@@ -54,6 +54,7 @@ These checks do not build firmware or access a device:
 ```bash
 ./script/test_device_controls.sh
 ./script/test_cortana_protocol.sh
+./script/test_protocol_conformance.sh
 ./script/test_device_ticket.sh
 ./script/test_cortana_session.sh
 ./script/test_capture_pipeline.sh
