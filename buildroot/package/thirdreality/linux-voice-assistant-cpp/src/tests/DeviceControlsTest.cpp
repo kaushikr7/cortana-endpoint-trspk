@@ -95,6 +95,17 @@ void TestEndpointLedStateMapping() {
     endpoint.phase = lva::cortana::SessionPhase::Blocked;
     lva::tr::EndpointLedPolicy::Apply(endpoint, leds);
     assert(leds.EffectiveState() == LedState::Blocked);
+
+    endpoint.phase = lva::cortana::SessionPhase::Ready;
+    lva::tr::EndpointLedPolicy::Apply(
+        endpoint, lva::audio::CaptureLifecycleState::Degraded, leds);
+    assert(leds.EffectiveState() == LedState::Reconnecting);
+    lva::tr::EndpointLedPolicy::Apply(
+        endpoint, lva::audio::CaptureLifecycleState::Blocked, leds);
+    assert(leds.EffectiveState() == LedState::Error);
+    lva::tr::EndpointLedPolicy::Apply(
+        endpoint, lva::audio::CaptureLifecycleState::Ready, leds);
+    assert(leds.EffectiveState() == LedState::Ready);
 }
 
 void TestHomeButtonClassification() {

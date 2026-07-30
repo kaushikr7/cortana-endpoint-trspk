@@ -5,10 +5,26 @@ namespace lva::tr {
 void EndpointLedPolicy::Apply(
     const lva::cortana::EndpointSnapshot& endpoint,
     LedController& leds) {
+    Apply(endpoint, lva::audio::CaptureLifecycleState::Ready, leds);
+}
+
+void EndpointLedPolicy::Apply(
+    const lva::cortana::EndpointSnapshot& endpoint,
+    lva::audio::CaptureLifecycleState capture,
+    LedController& leds) {
     using lva::cortana::Activity;
     using lva::cortana::SessionPhase;
 
     leds.SetBlocked(endpoint.phase == SessionPhase::Blocked);
+    if (capture == lva::audio::CaptureLifecycleState::Blocked) {
+        leds.SetSystem(LedState::Error);
+    } else if (capture == lva::audio::CaptureLifecycleState::Degraded) {
+        leds.SetSystem(LedState::Reconnecting);
+    } else if (capture == lva::audio::CaptureLifecycleState::Starting) {
+        leds.SetSystem(LedState::Booting);
+    } else {
+        leds.ClearSystem();
+    }
     if (endpoint.phase == SessionPhase::Connecting ||
         endpoint.phase == SessionPhase::Negotiating) {
         leds.SetConnection(endpoint.generation <= 1

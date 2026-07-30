@@ -1057,6 +1057,14 @@ satellite or area identifiers, transcripts, or recorded PCM.
 - Add deterministic host tests for retry scheduling and state transitions, then
   force a capture failure on the real device during T5.4.
 
+Implementation note: `CaptureSupervisor` now owns starting, ready, degraded,
+and blocked transitions for the ALSA worker. Exits and two-second stalls cross
+a recovery boundary that stops capture, clears capture and session PCM, resets
+AEC state, and retries with capped exponential backoff. Periodic diagnostics
+include lifecycle/failure/retry counters, and the ring shows reconnecting or
+error above turn activity while capture is degraded or blocked. The forced
+ALSA failure and recovery remains a T5.4 device acceptance check.
+
 #### T5.3 Server-side device registration — Medium
 
 - Add the satellite with explicit continuous/server-wake capability, trusted

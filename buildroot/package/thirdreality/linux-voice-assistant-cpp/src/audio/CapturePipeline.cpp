@@ -40,4 +40,8 @@ std::size_t CapturePipeline::DiscardQueued() noexcept {
     return queue_.Discard();
 }
 
+void CapturePipeline::ResetProcessing() {
+    processor_.ResetEcho();
+}
+
 }  // namespace lva::audio

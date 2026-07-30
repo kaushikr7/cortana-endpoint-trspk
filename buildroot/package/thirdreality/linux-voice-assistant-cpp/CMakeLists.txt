@@ -55,6 +55,7 @@ add_executable(linux-voice-assistant-cpp
     src/audio/AudioCapture.cpp
     src/audio/CaptureFrame.cpp
     src/audio/CapturePipeline.cpp
+    src/audio/CaptureSupervisor.cpp
     src/audio/MicrophoneIngress.cpp
     src/audio/WebRtcProcessor.cpp
     src/tr/HomeButton.cpp

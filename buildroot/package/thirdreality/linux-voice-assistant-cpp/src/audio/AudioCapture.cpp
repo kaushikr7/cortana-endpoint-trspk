@@ -152,7 +152,10 @@ bool AudioCapture::Start() {
     last_period_monotonic_ns_.store(0, std::memory_order_relaxed);
     maximum_processing_us_.store(0, std::memory_order_relaxed);
     stop_requested_.store(false, std::memory_order_relaxed);
-    alsa_handle_ = pcm;
+    {
+        std::lock_guard lock(alsa_mutex_);
+        alsa_handle_ = pcm;
+    }
     running_.store(true, std::memory_order_release);
     thread_ = std::thread([this] { ThreadLoop(); });
 
@@ -169,6 +172,12 @@ bool AudioCapture::Start() {
 
 void AudioCapture::Stop() {
     stop_requested_.store(true, std::memory_order_release);
+    {
+        std::lock_guard lock(alsa_mutex_);
+        if (alsa_handle_ != nullptr) {
+            (void)::snd_pcm_abort(static_cast<snd_pcm_t*>(alsa_handle_));
+        }
+    }
     if (thread_.joinable()) thread_.join();
     running_.store(false, std::memory_order_release);
 }
@@ -289,8 +298,11 @@ void AudioCapture::ThreadLoop() {
         }
     }
 
-    ::snd_pcm_close(pcm);
-    alsa_handle_ = nullptr;
+    {
+        std::lock_guard lock(alsa_mutex_);
+        alsa_handle_ = nullptr;
+        ::snd_pcm_close(pcm);
+    }
     running_.store(false, std::memory_order_release);
     LVA_LOGI(kTag, "capture stopped periods=%llu samples=%llu",
              static_cast<unsigned long long>(

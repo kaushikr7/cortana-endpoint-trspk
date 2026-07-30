@@ -25,6 +25,7 @@ public:
     bool Start();
     void Stop();
     std::size_t DiscardQueued() noexcept;
+    void ResetProcessing();
 
     PcmRingBuffer& Queue() noexcept { return queue_; }
     const PcmRingBuffer& Queue() const noexcept { return queue_; }

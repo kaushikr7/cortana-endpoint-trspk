@@ -22,6 +22,7 @@
 #include <nlohmann/json.hpp>
 
 #include "audio/CapturePipeline.h"
+#include "audio/CaptureSupervisor.h"
 #include "audio/MicrophoneIngress.h"
 #include "audio/RawPcmPlayer.h"
 #include "config/EndpointConfig.h"
@@ -337,10 +338,17 @@ int main(int argc, char** argv) {
     capture_options.capture.mic_channel = cli.capture_mic_channel;
     capture_options.capture.ref_channels = cli.capture_ref_channels;
     lva::audio::CapturePipeline capture(std::move(capture_options));
-    if (!capture.Start()) {
-        LVA_LOGE(kTag, "%s", "continuous microphone capture is unavailable");
-        leds.SetSystem(lva::tr::LedState::Error);
-    }
+    lva::audio::CaptureSupervisor capture_supervisor({
+        .start = [&capture] { return capture.Start(); },
+        .stop = [&capture] { capture.Stop(); },
+        .flush_audio = [&capture, &session] {
+            (void)capture.DiscardQueued();
+            capture.ResetProcessing();
+            session.DiscardAudioFrames();
+        },
+        .metrics = [&capture] { return capture.GetMetrics(); },
+    });
+    capture_supervisor.Start();
     lva::audio::MicrophoneIngress ingress(
         capture.Queue(),
         [&session](
@@ -450,8 +458,16 @@ int main(int argc, char** argv) {
         }
         runtime.PumpCommands();
         const auto endpoint = runtime.Snapshot();
-        (void)ingress.Pump(snapshot, endpoint.muted);
-        lva::tr::EndpointLedPolicy::Apply(endpoint, leds);
+        const auto now = std::chrono::steady_clock::now();
+        capture_supervisor.Poll(now);
+        const auto capture_status = capture_supervisor.Snapshot(now);
+        (void)ingress.Pump(
+            snapshot,
+            endpoint.muted ||
+                capture_status.state !=
+                    lva::audio::CaptureLifecycleState::Ready);
+        lva::tr::EndpointLedPolicy::Apply(
+            endpoint, capture_status.state, leds);
         if (snapshot.phase != logged_phase) {
             logged_phase = snapshot.phase;
             LVA_LOGI(kTag, "Cortana session phase=%.*s generation=%llu%s%s",
@@ -461,7 +477,6 @@ int main(int argc, char** argv) {
                      snapshot.detail.empty() ? "" : " detail=",
                      snapshot.detail.c_str());
         }
-        const auto now = std::chrono::steady_clock::now();
         if (now >= next_capture_metrics) {
             next_capture_metrics = now + 30s;
             const auto metrics = capture.GetMetrics();
@@ -479,7 +494,11 @@ int main(int argc, char** argv) {
                      "playback_state=%s playback_queue=%zu playback_high=%zu "
                      "playback_written=%llu playback_rejected=%llu "
                      "playback_discarded=%llu playback_errors=%llu "
-                     "runtime_queue=%zu runtime_sent=%llu runtime_dropped=%llu",
+                     "runtime_queue=%zu runtime_sent=%llu runtime_dropped=%llu "
+                     "capture_state=%.*s capture_failure=%.*s "
+                     "capture_attempts=%llu capture_boundaries=%llu "
+                     "capture_exits=%llu capture_stalls=%llu "
+                     "capture_consecutive_failures=%u capture_retry_ms=%llu",
                      metrics.running ? 1 : 0,
                      static_cast<unsigned long long>(metrics.periods_captured),
                      static_cast<unsigned long long>(metrics.samples_captured),
@@ -524,12 +543,31 @@ int main(int argc, char** argv) {
                      static_cast<unsigned long long>(
                          runtime_metrics.commands_sent),
                      static_cast<unsigned long long>(
-                         runtime_metrics.commands_dropped));
+                         runtime_metrics.commands_dropped),
+                     static_cast<int>(
+                         lva::audio::ToString(capture_status.state).size()),
+                     lva::audio::ToString(capture_status.state).data(),
+                     static_cast<int>(
+                         lva::audio::ToString(
+                             capture_status.last_failure).size()),
+                     lva::audio::ToString(
+                         capture_status.last_failure).data(),
+                     static_cast<unsigned long long>(
+                         capture_status.start_attempts),
+                     static_cast<unsigned long long>(
+                         capture_status.recovery_boundaries),
+                     static_cast<unsigned long long>(
+                         capture_status.exited_workers),
+                     static_cast<unsigned long long>(
+                         capture_status.stalled_workers),
+                     capture_status.consecutive_failures,
+                     static_cast<unsigned long long>(
+                         capture_status.retry_in_ms));
         }
     }
 
     home_button.Stop();
-    capture.Stop();
+    capture_supervisor.Stop();
     session.Stop();
     const int signal = g_shutdown_signal.load(std::memory_order_relaxed);
     LVA_LOGI(kTag, "exiting after signal %d", signal);

@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <thread>
 
@@ -62,6 +63,7 @@ private:
     Options options_;
     PcmRingBuffer& queue_;
     WebRtcProcessor* processor_ = nullptr;
+    mutable std::mutex alsa_mutex_;
     void* alsa_handle_ = nullptr;
     std::thread thread_;
     std::atomic<bool> running_{false};
