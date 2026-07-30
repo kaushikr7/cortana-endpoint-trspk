@@ -1071,6 +1071,15 @@ ALSA failure and recovery remains a T5.4 device acceptance check.
   area mapping, device authentication material, and acoustic overlap settings.
 - Add Vault/ExternalSecret material without putting credentials in either repo.
 
+Implementation note: Kensho registers `study-cortana-trspk` as an enabled
+device endpoint with continuous capture, server wake, `bargeInMode=none`, and
+trusted `area_id=study`. Its credential and device-ticket key are sourced only
+through the `cortana-device-auth` ExternalSecret. The Study Halo and TRSPK
+registrations share an area, so they already compete in the same arbitration
+window; cross-room acoustic overlap remains empty until physical calibration
+identifies an adjacent area that must join the group. A production contract
+test pins the registration, capability corpus, and secret-reference wiring.
+
 #### T5.4 Provision and exercise the physical endpoint — Medium
 
 - Provision through USB and verify ticket, trusted area, server wake, VAD, STT,
