@@ -973,25 +973,76 @@ hardware button owns its own mute LED. Host coverage is in
 
 - Delete `LibMpvPlayer` and remove MPV/FFmpeg selections only after Buildroot's
   graph confirms there is no remaining consumer.
-- Remove unused sounds, then full-build and validate TTS, local feedback, AEC,
-  image size, and boot time.
+- Remove unused sounds while retaining only feedback that has a named runtime
+  owner and exercised call path.
+- Constrain announced response PCM to 8-48 kHz PCM16 mono/stereo, matching
+  Halo's accepted range and the TRSPK's 48 kHz PulseAudio hardware sink. Reject
+  larger formats instead of spending memory and CPU on an unused capability.
+- Run dependency-graph, host-protocol, player, and absence checks here. Defer
+  the expensive full image build until T4.4 so one build validates both tickets.
+
+#### T4.4 Extract the endpoint runtime coordinator — Medium
+
+- Follow Halo's controller/transport/player boundary by moving server-event
+  dispatch, playback-result handling, generation-bound acknowledgement retry,
+  cancellation ordering, and mute/home decisions out of `main.cpp` into one
+  `EndpointRuntime` coordinator.
+- Keep `main.cpp` responsible only for construction, hardware polling, shutdown,
+  and periodic metrics. Keep `SessionClient` as the sole network owner,
+  `RawPcmPlayer` as the sole playback owner, and `EndpointState` as the pure
+  state reducer; do not merge their threads or duplicate their state.
+- Inject the session-command and playback boundaries so runtime behavior is
+  covered with deterministic host tests, including stale generations, command
+  pressure, physical cancel, mute during playback, disconnect, and exact
+  acknowledgement ordering.
+- Preserve behavior rather than redesigning the protocol. After the host suite
+  passes, run one full image build covering T4.3 and T4.4, then validate TTS,
+  local feedback, AEC reference, image size, boot time, and runtime metrics.
 
 Gate: Cortana PCM plays completely, stops immediately when cancelled, and the
-production image no longer carries a general media player stack.
+production image no longer carries a general media player stack. The endpoint
+runtime has one tested coordinator rather than turn/control policy embedded in
+the hardware wiring loop.
 
 ### Phase 5: Cortana/Kensho activation — overall Medium
 
-#### T5.1 Server-side device registration — Medium
+#### T5.1 Cross-endpoint protocol conformance — Medium
+
+- Create a versioned, secret-free Cortana voice v1 conformance corpus covering
+  ticket capabilities, handshake, continuous microphone framing, response PCM,
+  playback acknowledgement ordering, mute, manual activation, cancellation,
+  reconnect generations, strict unknown-field rejection, and terminal errors.
+- Run the same fixtures against Cortana's server models, Halo's transport, and
+  the TRSPK protocol/runtime tests. Document the explicit export/update step
+  between the private Kensho repo and this public firmware repo; fixtures must
+  contain no credentials, real satellite IDs, transcripts, or PCM recordings.
+- Treat fixture version/checksum drift as a failing test rather than adding
+  endpoint-specific compatibility behavior.
+
+#### T5.2 Capture lifecycle supervision — Medium
+
+- Follow Halo's microphone-controller lifecycle: distinguish capture starting,
+  ready, degraded, and blocked state; detect an exited/stalled ALSA capture
+  worker; and retry with bounded backoff without rebooting the speaker.
+- Flush capture and session audio at every recovery boundary so restarted
+  capture cannot replay stale PCM. Keep hardware/configuration failures visible
+  in status, metrics, and LED priority, and avoid a tight restart loop.
+- Add deterministic host tests for retry scheduling and state transitions, then
+  force a capture failure on the real device during T5.4.
+
+#### T5.3 Server-side device registration — Medium
 
 - Add the satellite with explicit continuous/server-wake capability, trusted
   area mapping, device authentication material, and acoustic overlap settings.
 - Add Vault/ExternalSecret material without putting credentials in either repo.
 
-#### T5.2 Provision and exercise the physical endpoint — Medium
+#### T5.4 Provision and exercise the physical endpoint — Medium
 
 - Provision through USB and verify ticket, trusted area, server wake, VAD, STT,
   Riven, Sundial, Piper, playback, mute, manual activation, cancellation, LED
   errors, and connection recovery.
+- Force capture-worker failure/recovery and confirm the endpoint returns to
+  fresh continuous PCM without a device reboot or stale buffered audio.
 - Keep `bargeInMode=none`; this phase does not depend on full-duplex acoustics.
 
 Gate: representative voice turns work end to end in the correct area without
@@ -1023,7 +1074,8 @@ Home Assistant, Sendspin, or on-device wake.
   tickets, wrong/revoked credentials, Piper/Whisper failure, queue pressure,
   Pulse failure, and device reboot.
 - Run at least a 24-hour connected voice soak and record final image size, boot
-  time, CPU/memory, dropped frames, traffic, latency, and AEC quality.
+  time, CPU/memory, source/target sample rates, frames captured/sent/dropped,
+  average KiB/s, peak capture/session/playback buffers, latency, and AEC quality.
 - Produce signed recoverable `.swu` and `.img` artifacts plus exact USB recovery
   and provisioning documentation.
 
@@ -1061,6 +1113,8 @@ device:
   blocked, and update states without competing ring writers;
 - Wi-Fi and Cortana restarts recover without rebooting the device or replaying
   stale audio;
+- a failed or stalled capture worker recovers with bounded backoff, without a
+  reboot or stale audio;
 - revoked or mismatched credentials fail closed and show a blocked status;
 - no Sendspin process, package, configuration, persistence, or LED writer
   remains in the production image;
