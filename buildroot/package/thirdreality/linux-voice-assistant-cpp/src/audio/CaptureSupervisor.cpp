@@ -149,6 +149,17 @@ void CaptureSupervisor::Poll(Clock::time_point now) {
     }
 }
 
+void CaptureSupervisor::RestartAfterHardwareChange(Clock::time_point now) {
+    if (!active_) return;
+    dependencies_.stop();
+    dependencies_.flush_audio();
+    ++snapshot_.recovery_boundaries;
+    ++snapshot_.planned_restarts;
+    snapshot_.last_failure = CaptureFailure::None;
+    snapshot_.consecutive_failures = 0;
+    AttemptStart(now);
+}
+
 void CaptureSupervisor::Stop() {
     if (!active_) return;
     active_ = false;

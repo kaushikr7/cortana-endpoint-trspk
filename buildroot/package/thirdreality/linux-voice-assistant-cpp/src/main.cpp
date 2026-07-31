@@ -407,9 +407,13 @@ int main(int argc, char** argv) {
     });
 
     lva::tr::MicMuteGpio mute_gpio(
-        [&runtime](
-            bool new_muted, lva::tr::MuteChangeSource) {
+        [&runtime, &capture_supervisor](
+            bool new_muted, lva::tr::MuteChangeSource source) {
             runtime.OnMuteChanged(new_muted);
+            if (!new_muted &&
+                source == lva::tr::MuteChangeSource::Hardware) {
+                capture_supervisor.RestartAfterHardwareChange();
+            }
         });
     if (mute_gpio.Available()) (void)mute_gpio.ReadAndApplyOnce();
 
@@ -514,6 +518,7 @@ int main(int argc, char** argv) {
                      "runtime_queue=%zu runtime_sent=%llu runtime_dropped=%llu "
                      "capture_state=%.*s capture_failure=%.*s "
                      "capture_attempts=%llu capture_boundaries=%llu "
+                     "capture_planned_restarts=%llu "
                      "capture_exits=%llu capture_stalls=%llu "
                      "capture_consecutive_failures=%u capture_retry_ms=%llu",
                      metrics.running ? 1 : 0,
@@ -573,6 +578,8 @@ int main(int argc, char** argv) {
                          capture_status.start_attempts),
                      static_cast<unsigned long long>(
                          capture_status.recovery_boundaries),
+                     static_cast<unsigned long long>(
+                         capture_status.planned_restarts),
                      static_cast<unsigned long long>(
                          capture_status.exited_workers),
                      static_cast<unsigned long long>(

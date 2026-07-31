@@ -47,9 +47,18 @@ void EndpointState::HandleServerEvent(const SessionEvent& event) {
                 snapshot_.activity = value.activity;
             } else if constexpr (std::is_same_v<Event, SessionHealth>) {
                 snapshot_.health = value.health;
-                snapshot_.activity = value.activity;
                 observed_session_health_ = value.health;
                 observed_session_activity_ = value.activity;
+                // Session health is authoritative. Armed/idle means Cortana
+                // no longer owns an input turn, including after recoverable
+                // terminal outcomes such as no_speech.
+                if ((value.activity == Activity::Armed ||
+                     value.activity == Activity::Idle) &&
+                    !snapshot_.playback_turn_id.has_value()) {
+                    ResetTurn(value.activity);
+                } else {
+                    snapshot_.activity = value.activity;
+                }
             } else if constexpr (std::is_same_v<Event, WakeAccepted>) {
                 snapshot_.active_turn_id = value.turn_id;
                 snapshot_.activity = Activity::Hearing;
@@ -84,6 +93,11 @@ void EndpointState::HandleServerEvent(const SessionEvent& event) {
             } else if constexpr (std::is_same_v<Event, TurnCancelled>) {
                 if (!value.turn_id.has_value() ||
                     snapshot_.active_turn_id == value.turn_id) {
+                    ResetTurn(Activity::Armed);
+                }
+            } else if constexpr (std::is_same_v<Event, ErrorEvent>) {
+                if (value.code == "no_speech" ||
+                    value.code == "turn_unknown") {
                     ResetTurn(Activity::Armed);
                 }
             }

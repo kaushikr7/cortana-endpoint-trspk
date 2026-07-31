@@ -180,6 +180,20 @@ void TestMuteOrderingAndNonPlaybackCancellation() {
     assert(hearing_ports.sent[1].at("type") == "mute.changed");
 }
 
+void TestInitialHardwareMuteWaitsForSessionSync() {
+    FakePorts ports;
+    EndpointRuntime runtime(ports.Dependencies());
+    runtime.OnMuteChanged(true);
+    assert(ports.sent.empty());
+    assert(runtime.Metrics().commands_dropped == 0);
+    assert(ports.mute_states == std::vector<bool>{true});
+
+    runtime.UpdateSession(Ready());
+    assert(ports.sent.size() == 1);
+    assert(ports.sent[0].at("type") == "mute.changed");
+    assert(ports.sent[0].at("muted") == true);
+}
+
 void TestCommandPressureAndGenerationIsolation() {
     FakePorts ports;
     ports.accept_commands = false;
@@ -218,5 +232,6 @@ void TestCommandPressureAndGenerationIsolation() {
 int main() {
     TestPlaybackDispatchAndPhysicalAcknowledgements();
     TestMuteOrderingAndNonPlaybackCancellation();
+    TestInitialHardwareMuteWaitsForSessionSync();
     TestCommandPressureAndGenerationIsolation();
 }

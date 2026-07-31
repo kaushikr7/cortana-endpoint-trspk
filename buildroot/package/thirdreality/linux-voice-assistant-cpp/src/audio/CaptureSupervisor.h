@@ -17,6 +17,7 @@ struct CaptureSupervisorSnapshot {
     CaptureFailure last_failure = CaptureFailure::None;
     std::uint64_t start_attempts = 0;
     std::uint64_t recovery_boundaries = 0;
+    std::uint64_t planned_restarts = 0;
     std::uint64_t exited_workers = 0;
     std::uint64_t stalled_workers = 0;
     std::uint32_t consecutive_failures = 0;
@@ -49,6 +50,7 @@ public:
 
     void Start(Clock::time_point now = Clock::now());
     void Poll(Clock::time_point now = Clock::now());
+    void RestartAfterHardwareChange(Clock::time_point now = Clock::now());
     void Stop();
 
     CaptureSupervisorSnapshot Snapshot(

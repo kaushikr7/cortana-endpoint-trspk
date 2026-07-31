@@ -136,9 +136,42 @@ void TestCancellationMuteAndReconnectReset() {
     assert(state.ActiveTurnId() == "turn-new");
 }
 
+void TestRecoverableTerminalEventsReleaseInputTurn() {
+    EndpointState state;
+    state.UpdateSession(ReadySession());
+    ServerEvent(state, lva::cortana::WakeAccepted{"activation", "turn-stale"});
+    assert(state.ActiveTurnId() == "turn-stale");
+
+    ServerEvent(state, lva::cortana::ErrorEvent{
+        .code = "no_speech",
+        .message = "No speech was detected",
+        .recoverable = true,
+    });
+    assert(!state.ActiveTurnId().has_value());
+    assert(state.Snapshot().activity == Activity::Armed);
+
+    ServerEvent(state, lva::cortana::WakeAccepted{"activation-2", "turn-2"});
+    ServerEvent(state, lva::cortana::SessionHealth{
+        .health = Health::Ready,
+        .activity = Activity::Idle,
+        .nonce = std::nullopt,
+    });
+    assert(!state.ActiveTurnId().has_value());
+    assert(state.Snapshot().activity == Activity::Idle);
+
+    ServerEvent(state, lva::cortana::WakeAccepted{"activation-3", "turn-3"});
+    ServerEvent(state, lva::cortana::ErrorEvent{
+        .code = "turn_unknown",
+        .message = "Turn is no longer active",
+        .recoverable = true,
+    });
+    assert(!state.ActiveTurnId().has_value());
+}
+
 }  // namespace
 
 int main() {
     TestTurnAndPhysicalPlaybackTransitions();
     TestCancellationMuteAndReconnectReset();
+    TestRecoverableTerminalEventsReleaseInputTurn();
 }

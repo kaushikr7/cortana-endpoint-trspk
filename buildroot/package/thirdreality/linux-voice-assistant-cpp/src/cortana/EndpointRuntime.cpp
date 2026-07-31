@@ -208,6 +208,8 @@ void EndpointRuntime::OnMuteChanged(bool muted) {
     const auto decision = lva::tr::PhysicalControlPolicy::OnMuteChanged(
         muted, state_changed, EndpointActivityFor(before));
     const auto active_turn = state_.ActiveTurnId();
+    const bool can_notify_server =
+        before.phase == SessionPhase::Ready && before.generation != 0;
     dependencies_.set_microphone_muted(muted);
     state_.SetMuted(muted);
 
@@ -222,13 +224,14 @@ void EndpointRuntime::OnMuteChanged(bool muted) {
         }
         dependencies_.stop_playback({}, "muted");
     }
-    if (decision.cancel_turn && !before.playback_turn_id.has_value()) {
+    if (can_notify_server && decision.cancel_turn &&
+        !before.playback_turn_id.has_value()) {
         QueueCommand(SerializeTurnCancel(
                          active_turn, CancellationSource::Mute,
                          "microphone_muted"),
                      before.generation);
     }
-    if (decision.notify_server &&
+    if (can_notify_server && decision.notify_server &&
         !(muted && pending_playback_stop_.has_value())) {
         QueueCommand(SerializeMuteChanged(muted), before.generation);
     }

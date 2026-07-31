@@ -1024,7 +1024,10 @@ network, ALSA, or PulseAudio workers. `main.cpp` now constructs those owners,
 polls hardware, forwards events/results, renders the reduced state, and logs
 metrics. Run `script/test_endpoint_runtime.sh` for playback ordering, physical
 cancel, mute ordering, command pressure, activation, and stale-generation
-coverage. The combined T4.3/T4.4 target build remains deferred as planned.
+coverage. Recoverable `no_speech`/`turn_unknown` events and authoritative
+idle/armed health now release abandoned input turns, so the home button cannot
+mistake a completed server turn for a local cancellation target. The combined
+T4.3/T4.4 target build remains deferred as planned.
 
 Gate: Cortana PCM plays completely, stops immediately when cancelled, and the
 production image no longer carries a general media player stack. The endpoint
@@ -1070,8 +1073,10 @@ and blocked transitions for the ALSA worker. Exits and two-second stalls cross
 a recovery boundary that stops capture, clears capture and session PCM, resets
 AEC state, and retries with capped exponential backoff. Periodic diagnostics
 include lifecycle/failure/retry counters, and the ring shows reconnecting or
-error above turn activity while capture is degraded or blocked. The forced
-ALSA failure and recovery remains a T5.4 device acceptance check.
+error above turn activity while capture is degraded or blocked. A physical
+unmute performs an immediate planned restart with fresh queues and AEC state,
+avoiding the measured delayed ALSA stall and recovery flash. The forced ALSA
+failure and recovery remains a T5.4 device acceptance check.
 
 #### T5.3 Server-side device registration — Medium
 

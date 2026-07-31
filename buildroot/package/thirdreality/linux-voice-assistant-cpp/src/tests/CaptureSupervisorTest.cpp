@@ -150,10 +150,31 @@ void TestFailedStartIsRetriedWithoutTightLoop() {
     assert(fixture.starts == 2);
 }
 
+void TestHardwareChangeRestartsWithFreshAudioImmediately() {
+    Fixture fixture;
+    auto supervisor = fixture.MakeSupervisor();
+    const auto start = CaptureSupervisor::Clock::time_point{} + 4s;
+    supervisor.Start(start);
+    MarkPeriod(fixture, start + 1ms);
+    supervisor.Poll(start + 1ms);
+
+    supervisor.RestartAfterHardwareChange(start + 2ms);
+    const auto snapshot = supervisor.Snapshot(start + 2ms);
+    assert(snapshot.state == CaptureLifecycleState::Starting);
+    assert(snapshot.planned_restarts == 1);
+    assert(snapshot.recovery_boundaries == 1);
+    assert(snapshot.consecutive_failures == 0);
+    assert(snapshot.last_failure == CaptureFailure::None);
+    assert(fixture.starts == 2);
+    assert(fixture.stops == 1);
+    assert(fixture.flushes == 2);
+}
+
 }  // namespace
 
 int main() {
     TestStartReadyExitAndFreshRecovery();
     TestStallsBackOffAndEventuallyBlock();
     TestFailedStartIsRetriedWithoutTightLoop();
+    TestHardwareChangeRestartsWithFreshAudioImmediately();
 }
