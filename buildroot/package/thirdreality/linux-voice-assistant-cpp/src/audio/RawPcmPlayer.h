@@ -47,9 +47,9 @@ struct RawPlaybackSnapshot {
 class RawPcmPlayer {
 public:
     struct Options {
-        std::size_t maximum_queued_bytes = 256 * 1024;
+        std::size_t maximum_queued_bytes = 1024 * 1024;
         std::size_t maximum_chunk_bytes = 64 * 1024;
-        std::size_t maximum_buffered_audio_ms = 500;
+        std::size_t maximum_buffered_audio_ms = 20 * 1000;
         std::size_t maximum_results = 8;
     };
 

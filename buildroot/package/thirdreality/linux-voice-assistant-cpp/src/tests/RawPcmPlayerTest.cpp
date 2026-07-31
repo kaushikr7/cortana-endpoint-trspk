@@ -120,6 +120,15 @@ lva::audio::PcmFormat Format() {
     };
 }
 
+lva::audio::PcmFormat PiperFormat() {
+    return {
+        .encoding = "pcm_s16le",
+        .sample_rate = 22050,
+        .sample_width = 2,
+        .channels = 1,
+    };
+}
+
 std::string Samples(std::size_t bytes, char value) {
     return std::string(bytes, value);
 }
@@ -190,6 +199,38 @@ void TestBoundedQueueAndImmediateStop() {
     assert(state->written.size() == 4);
 }
 
+void TestPiperResponseBurstFitsProductionQueue() {
+    auto state = std::make_shared<SinkState>();
+    state->block_write = true;
+    lva::audio::RawPcmPlayer player(
+        {}, [state] { return std::make_unique<FakeSink>(state); });
+
+    // A real Piper response delivered these two chunks in about 12 ms. Keep
+    // the sink blocked to prove that the complete burst fits before playback
+    // has had an opportunity to drain any queued audio.
+    assert(player.Begin("turn-burst", PiperFormat()));
+    assert(player.Enqueue("turn-burst", Samples(20480, '\x45')));
+    assert(WaitUntil([&] {
+        std::lock_guard lock(state->mutex);
+        return state->write_entered;
+    }));
+    assert(player.Enqueue("turn-burst", Samples(53248, '\x46')));
+    assert(player.Snapshot().queued_bytes == 73728);
+    assert(player.End("turn-burst"));
+    {
+        std::lock_guard lock(state->mutex);
+        state->release_write = true;
+        state->condition.notify_all();
+    }
+    assert(WaitUntil([&] { return player.Snapshot().completed == 1; }));
+    const auto snapshot = player.Snapshot();
+    assert(snapshot.bytes_accepted == 73728);
+    assert(snapshot.bytes_written == 73728);
+    assert(snapshot.bytes_rejected == 0);
+    std::lock_guard lock(state->mutex);
+    assert(state->written.size() == 73728);
+}
+
 void TestWriteFailureIsReportedWithoutBlockingProducer() {
     auto state = std::make_shared<SinkState>();
     state->fail_write = true;
@@ -250,6 +291,7 @@ void TestFormatAndTurnValidation() {
 int main() {
     TestCompletionFollowsPhysicalDrain();
     TestBoundedQueueAndImmediateStop();
+    TestPiperResponseBurstFitsProductionQueue();
     TestWriteFailureIsReportedWithoutBlockingProducer();
     TestStopInterruptsDrainWithoutCompleting();
     TestFormatAndTurnValidation();

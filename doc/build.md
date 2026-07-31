@@ -935,9 +935,12 @@ no on-device wake implementation or model.
   cannot deadlock the session thread.
 - Confirm playback uses the physical output seen by the AEC reference channels.
 
-Implementation uses a dedicated worker with a hard 256 KiB ceiling and a
-format-aware 500 ms application queue for announced PCM16LE mono/stereo
-formats. WebSocket binary chunks are limited to 64 KiB and accepted only
+Implementation uses a dedicated worker with a hard 1024 KiB ceiling and a
+format-aware 20-second application queue for announced PCM16LE mono/stereo
+formats. Playback begins as soon as the first chunk reaches the worker; the
+larger limits absorb a complete response delivered faster than the physical
+sink can consume it and do not add startup latency. WebSocket binary chunks
+are limited to 64 KiB and accepted only
 between matching `audio.start`/`audio.end` events. Writes are split into at
 most 20 ms slices so cancellation cannot sit behind a large received chunk.
 Completion is emitted only after PulseAudio reports an exact drain; stop,
