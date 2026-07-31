@@ -23,6 +23,7 @@
 
 #include "audio/CapturePipeline.h"
 #include "audio/CaptureSupervisor.h"
+#include "audio/ConfirmationTone.h"
 #include "audio/MicrophoneIngress.h"
 #include "audio/PlaybackDmaKeepalive.h"
 #include "audio/RawPcmPlayer.h"
@@ -35,6 +36,8 @@
 #include "tr/HomeButton.h"
 #include "tr/LedController.h"
 #include "tr/MicMuteGpio.h"
+#include "tr/SoundVolumeWatcher.h"
+#include "tr/SystemVolume.h"
 #include "util/Log.h"
 
 namespace {
@@ -349,6 +352,17 @@ int main(int argc, char** argv) {
             return lva::audio::MakePulseAudioSink(
                 "alsa_output.hw_0_1");
         });
+    lva::audio::RawPcmPlayer volume_feedback(
+        {
+            .maximum_queued_bytes = 32 * 1024,
+            .maximum_chunk_bytes = 32 * 1024,
+            .maximum_buffered_audio_ms = 150,
+            .maximum_results = 8,
+        },
+        [] {
+            return lva::audio::MakePulseAudioSink(
+                "alsa_output.hw_0_1", "Volume feedback");
+        });
     lva::audio::PlaybackDmaKeepalive playback_keepalive(
         [] {
             return lva::audio::MakePulseAudioSink(
@@ -437,6 +451,38 @@ int main(int argc, char** argv) {
         LVA_LOGW(kTag, "%s", "home button monitor disabled");
     }
 
+    std::uint64_t volume_feedback_sequence = 0;
+    lva::tr::SoundVolumeWatcher volume_watcher(
+        "/data/conf/sound.json",
+        [&volume_feedback, &volume_feedback_sequence, &leds](
+            int percent, bool feedback) {
+            if (!feedback) {
+                lva::tr::SetSystemVolumeSilent(percent);
+                return;
+            }
+
+            lva::tr::SetSystemVolume(percent);
+            leds.ShowVolumeChanged();
+
+            const std::string turn_id = "volume-feedback-" +
+                std::to_string(++volume_feedback_sequence);
+            volume_feedback.Stop({}, "superseded");
+            const lva::audio::PcmFormat format{
+                .encoding = "pcm_s16le",
+                .sample_rate = 48000,
+                .sample_width = 2,
+                .channels = 2,
+            };
+            const std::string tone = lva::audio::MakeConfirmationTone();
+            if (!volume_feedback.Begin(turn_id, format) ||
+                !volume_feedback.Enqueue(turn_id, tone) ||
+                !volume_feedback.End(turn_id)) {
+                LVA_LOGW(kTag, "%s",
+                         "could not queue volume confirmation tone");
+            }
+        });
+    volume_watcher.ApplyInitial();
+
     lva::cortana::SessionPhase logged_phase =
         lva::cortana::SessionPhase::Stopped;
     auto next_capture_metrics = std::chrono::steady_clock::now() + 30s;
@@ -459,6 +505,7 @@ int main(int argc, char** argv) {
         }
 
         mute_gpio.Poll();
+        volume_watcher.Poll();
         leds.Poll();
         auto snapshot = session.Snapshot();
         runtime.UpdateSession(snapshot);
@@ -486,6 +533,12 @@ int main(int argc, char** argv) {
                      result->turn_id.c_str(), outcome,
                      result->detail.empty() ? "" : " detail=",
                      result->detail.c_str());
+        }
+        while (const auto result = volume_feedback.TryPopResult()) {
+            if (result->outcome == lva::audio::RawPlaybackOutcome::Error) {
+                LVA_LOGW(kTag, "volume feedback failed: %s",
+                         result->detail.c_str());
+            }
         }
         runtime.PumpCommands();
         const auto endpoint = runtime.Snapshot();

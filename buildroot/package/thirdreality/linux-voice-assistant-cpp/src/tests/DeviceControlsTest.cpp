@@ -9,11 +9,13 @@
 #include <utility>
 #include <vector>
 
+#include "audio/ConfirmationTone.h"
 #include "tr/HomeButton.h"
 #include "tr/EndpointLedPolicy.h"
 #include "tr/LedController.h"
 #include "tr/MicMuteGpio.h"
 #include "tr/PhysicalControlPolicy.h"
+#include "tr/SoundVolumeWatcher.h"
 
 namespace {
 
@@ -146,6 +148,52 @@ void TestPhysicalControlPolicy() {
     assert(!unmute.cancel_turn);
 }
 
+void TestConfirmationTone() {
+    const std::string tone = lva::audio::MakeConfirmationTone();
+    assert(tone.size() == 48000U * 80U / 1000U * 2U * 2U);
+    assert(tone[0] == '\0');
+    assert(tone[1] == '\0');
+    assert(tone.find_first_not_of('\0') != std::string::npos);
+}
+
+void TestSoundVolumeWatcher() {
+    char directory_template[] = "/tmp/cortana-volume-test-XXXXXX";
+    const char* directory = ::mkdtemp(directory_template);
+    assert(directory != nullptr);
+    const std::filesystem::path sound_path =
+        std::filesystem::path(directory) / "sound.json";
+    {
+        std::ofstream sound(sound_path);
+        sound << R"({"volume":50})";
+    }
+
+    std::vector<std::pair<int, bool>> changes;
+    lva::tr::SoundVolumeWatcher watcher(
+        sound_path,
+        [&changes](int percent, bool feedback) {
+            changes.emplace_back(percent, feedback);
+        });
+    watcher.ApplyInitial();
+    assert((changes ==
+            std::vector<std::pair<int, bool>>{{50, false}}));
+
+    const auto replacement = sound_path.string() + ".new";
+    {
+        std::ofstream sound(replacement);
+        sound << R"({"volume":70})";
+    }
+    std::filesystem::rename(replacement, sound_path);
+    watcher.Poll(lva::tr::SoundVolumeWatcher::Clock::time_point{} +
+                 std::chrono::seconds(1));
+    assert(changes.size() == 2);
+    assert(changes.back() == std::make_pair(70, true));
+
+    watcher.Poll(lva::tr::SoundVolumeWatcher::Clock::time_point{} +
+                 std::chrono::seconds(2));
+    assert(changes.size() == 2);
+    std::filesystem::remove_all(directory);
+}
+
 void TestMuteCallbackSourcesAndHardwareSync() {
     char directory_template[] = "/tmp/cortana-controls-test-XXXXXX";
     const char* directory = ::mkdtemp(directory_template);
@@ -196,5 +244,7 @@ int main() {
     TestEndpointLedStateMapping();
     TestHomeButtonClassification();
     TestPhysicalControlPolicy();
+    TestConfirmationTone();
+    TestSoundVolumeWatcher();
     TestMuteCallbackSourcesAndHardwareSync();
 }

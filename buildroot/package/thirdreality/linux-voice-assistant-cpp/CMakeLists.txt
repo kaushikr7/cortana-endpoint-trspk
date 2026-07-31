@@ -49,6 +49,7 @@ add_executable(linux-voice-assistant-cpp
     src/cortana/Protocol.cpp
     src/cortana/SessionClient.cpp
     src/state/Preferences.cpp
+    src/audio/ConfirmationTone.cpp
     src/audio/PulseAudioSink.cpp
     src/audio/PlaybackDmaKeepalive.cpp
     src/audio/RawPcmPlayer.cpp
@@ -63,6 +64,7 @@ add_executable(linux-voice-assistant-cpp
     src/tr/EndpointLedPolicy.cpp
     src/tr/LedController.cpp
     src/tr/MicMuteGpio.cpp
+    src/tr/SoundVolumeWatcher.cpp
     src/tr/SysInfo.cpp
     src/tr/SystemVolume.cpp
     src/util/Log.cpp
