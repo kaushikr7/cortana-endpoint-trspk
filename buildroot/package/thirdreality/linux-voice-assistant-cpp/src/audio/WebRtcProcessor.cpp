@@ -75,13 +75,15 @@ void WebRtcProcessor::RebuildLocked() {
         cfg.high_pass_filter.enabled = true;  // aids AEC convergence
     }
     if (agc_level_ > 0) {
-        cfg.gain_controller1.enabled = true;
-        cfg.gain_controller1.mode =
-            ::webrtc::AudioProcessing::Config::GainController1::kFixedDigital;
-        cfg.gain_controller1.target_level_dbfs = 3;  // -3 dBFS target
-        cfg.gain_controller1.compression_gain_db =
-            std::clamp(agc_level_, 1, 31);
-        cfg.gain_controller1.enable_limiter = true;
+        // GainController1 caps fixed digital gain at 31 dB. Measurements on
+        // the TRSPK microphone require more range, so use AGC2's fixed gain
+        // followed by its limiter. Adaptive gain remains disabled to keep the
+        // measured endpoint response deterministic.
+        cfg.gain_controller2.enabled = true;
+        cfg.gain_controller2.fixed_digital.gain_db =
+            static_cast<float>(std::clamp(
+                agc_level_, 1, WebRtcProcessor::kMaximumGainDb));
+        cfg.gain_controller2.adaptive_digital.enabled = false;
     }
     if (ns_level_ > 0) {
         cfg.noise_suppression.enabled = true;
@@ -92,7 +94,10 @@ void WebRtcProcessor::RebuildLocked() {
              "initialized (aec=%d, agc=%d gain_db=%d, ns=%d, hpf=%d)",
              aec_enabled_ ? 1 : 0,
              agc_level_,
-             agc_level_ > 0 ? std::clamp(agc_level_, 1, 31) : 0,
+             agc_level_ > 0
+                 ? std::clamp(agc_level_, 1,
+                              WebRtcProcessor::kMaximumGainDb)
+                 : 0,
              ns_level_,
              aec_enabled_ ? 1 : 0);
     apm_ = apm;

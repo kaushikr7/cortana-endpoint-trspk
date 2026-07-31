@@ -13,7 +13,10 @@ public:
     struct Options {
         AudioCapture::Options capture;
         std::size_t queue_capacity_samples = 3200;  // rounded to 4096 / 256 ms
-        int automatic_gain_db = 10;
+        // Measured TRSPK speech at <1 m is roughly -63 dBFS before digital
+        // gain. 42 dB leaves near-field peak headroom while providing about
+        // 10 dB more range for a three-metre voice path.
+        int automatic_gain_db = WebRtcProcessor::kDefaultGainDb;
         int noise_suppression_level = 2;
     };
 

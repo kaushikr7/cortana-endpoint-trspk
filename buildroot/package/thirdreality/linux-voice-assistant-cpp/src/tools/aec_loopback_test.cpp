@@ -14,14 +14,14 @@
 //      once AEC is wired in:
 //        ProcessReverseStream(ref_mono)
 //        set_stream_delay_ms(0)
-//        ProcessStream(mic_mono)            -> aec_out_mono
+//        ProcessStream(mic_mono)            -> gained_aec_out_mono
 //   4. Writes three 16-bit mono WAVs:
 //        <out_dir>/raw_mic.wav     pre-AEC mic
 //        <out_dir>/ref.wav         loopback reference
-//        <out_dir>/aec_out.wav     AEC output
-//      (capped at --duration seconds; default 30 s.)
+//        <out_dir>/aec_out.wav     production-gained AEC output
+//      (capped at --duration seconds; default 5 s.)
 //   5. Prints rough ERLE (Echo Return Loss Enhancement) every second:
-//        ERLE_dB = 10 * log10( sum(mic^2) / sum(aec_out^2) )
+//        ERLE_dB = 10 * log10( sum(mic^2) / sum(aec_out^2) ) + gain_db
 //      Higher = more echo cancelled. Computed only over windows where ref
 //      RMS > a small floor, i.e. while playback is actually happening.
 //
@@ -53,6 +53,9 @@
 //   # Disable AEC to verify alsa capture + WAV writing path alone.
 //   aec_loopback_test --no-aec --out /tmp/aec
 //
+//   # Disable production gain for a raw AEC/ERLE comparison.
+//   aec_loopback_test --gain-db 0 --play /tmp/reference.wav --out /tmp/aec
+//
 
 #include <fcntl.h>
 #include <getopt.h>
@@ -74,6 +77,7 @@
 
 #include <alsa/asoundlib.h>
 
+#include "audio/WebRtcProcessor.h"
 #include "modules/audio_processing/include/audio_processing.h"
 
 namespace {
@@ -97,6 +101,7 @@ struct Options {
     int         ref_b       = 3;     // 0-based; user "ch4" = 3 (set -1 to disable)
     bool        aec_enabled = true;
     int         ns_level    = 2;     // 0=off, 1..4 = APM NS level
+    int         gain_db     = lva::audio::WebRtcProcessor::kDefaultGainDb;
     bool        hpf_enabled = true;
     int         stream_delay_ms = 0;
 
@@ -125,6 +130,7 @@ void PrintUsage(const char* argv0) {
         "  --no-aec                Disable echo canceller (capture-only test)\n"
         "  --no-hpf                Disable high-pass filter\n"
         "  --ns-level <0-4>        Noise suppression level (default 2; 0=off)\n"
+        "  --gain-db <0-49>        AGC2 fixed gain (default 42; 0=off)\n"
         "  --stream-delay-ms <n>   Hint to AEC; 0 is right for hw loopback\n"
         "  --play <file.wav>       Spawn aplay on this WAV before opening\n"
         "                          capture (loops in a child process; killed\n"
@@ -149,6 +155,7 @@ bool ParseCli(int argc, char** argv, Options& out) {
         {"no-aec",          no_argument,       nullptr, 'A'},
         {"no-hpf",          no_argument,       nullptr, 'H'},
         {"ns-level",        required_argument, nullptr, 'n'},
+        {"gain-db",         required_argument, nullptr, 'G'},
         {"stream-delay-ms", required_argument, nullptr, 'D'},
         {"play",            required_argument, nullptr, 'P'},
         {"play-device",     required_argument, nullptr, 'V'},
@@ -168,6 +175,7 @@ bool ParseCli(int argc, char** argv, Options& out) {
             case 'A': out.aec_enabled = false; break;
             case 'H': out.hpf_enabled = false; break;
             case 'n': out.ns_level = std::atoi(optarg); break;
+            case 'G': out.gain_db = std::atoi(optarg); break;
             case 'D': out.stream_delay_ms = std::atoi(optarg); break;
             case 'P': out.play_wav = optarg; break;
             case 'V': out.play_device = optarg; break;
@@ -200,6 +208,11 @@ bool ParseCli(int argc, char** argv, Options& out) {
     }
     if (out.ns_level < 0 || out.ns_level > 4) {
         std::fprintf(stderr, "--ns-level out of range\n");
+        return false;
+    }
+    if (out.gain_db < 0 ||
+        out.gain_db > lva::audio::WebRtcProcessor::kMaximumGainDb) {
+        std::fprintf(stderr, "--gain-db out of range\n");
         return false;
     }
     return true;
@@ -539,12 +552,13 @@ int main(int argc, char** argv) {
 
     std::fprintf(stderr,
                  "aec_loopback_test: device=%s out=%s duration=%ds "
-                 "mic_ch=%d ref=(%d,%d) aec=%d hpf=%d ns=%d delay=%dms\n",
+                 "mic_ch=%d ref=(%d,%d) aec=%d hpf=%d ns=%d gain=%ddB "
+                 "delay=%dms\n",
                  opts.device.c_str(), opts.out_dir.c_str(), opts.duration_s,
                  opts.mic_ch, opts.ref_a, opts.ref_b,
                  opts.aec_enabled ? 1 : 0,
                  opts.hpf_enabled ? 1 : 0,
-                 opts.ns_level, opts.stream_delay_ms);
+                 opts.ns_level, opts.gain_db, opts.stream_delay_ms);
 
     // -- Optional internal aplay loop --
     // Spawn FIRST, then sleep, THEN open capture. The Amlogic loopback
@@ -598,6 +612,12 @@ int main(int argc, char** argv) {
                 case 3: cfg.noise_suppression.level = L::kHigh;      break;
                 case 4: cfg.noise_suppression.level = L::kVeryHigh;  break;
             }
+        }
+        if (opts.gain_db > 0) {
+            cfg.gain_controller2.enabled = true;
+            cfg.gain_controller2.fixed_digital.gain_db =
+                static_cast<float>(opts.gain_db);
+            cfg.gain_controller2.adaptive_digital.enabled = false;
         }
         apm->ApplyConfig(cfg);
     }
@@ -716,7 +736,8 @@ int main(int argc, char** argv) {
             double erle_db = 0.0;
             const bool ref_loud = (ref_rms >= kRefRmsLoud);
             if (ref_loud && sec_out_e > 0.0) {
-                erle_db = 10.0 * std::log10(sec_mic_e / sec_out_e);
+                erle_db = 10.0 * std::log10(sec_mic_e / sec_out_e) +
+                    opts.gain_db;
             }
             std::fprintf(stderr,
                          "[t=%4ds] mic_rms=%6.0f ref_rms=%6.0f out_rms=%6.0f "
@@ -746,7 +767,8 @@ int main(int argc, char** argv) {
     if (tot_loud_periods > 0) {
         const double erle_db =
             10.0 * std::log10(tot_mic_e_loud /
-                              std::max(1e-9, tot_out_e_loud));
+                              std::max(1e-9, tot_out_e_loud)) +
+            opts.gain_db;
         std::fprintf(stderr,
                      "\nFinal ERLE over loud periods: %.1f dB "
                      "(%zu periods = %.1fs of playback)\n",

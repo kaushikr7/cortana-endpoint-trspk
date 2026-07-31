@@ -58,6 +58,7 @@ These checks do not build firmware or access a device:
 ./script/test_device_ticket.sh
 ./script/test_cortana_session.sh
 ./script/test_capture_pipeline.sh
+./script/test_audio_gain_config.sh
 ./script/test_capture_supervisor.sh
 ./script/test_pcm_playback.sh
 ./script/test_endpoint_state.sh

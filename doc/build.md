@@ -898,6 +898,14 @@ mute, bounds, scripted backpressure, and reconnect isolation.
   existing `sound.json`/`amixer` microphone-gain control, which is not yet
   proven effective on this hardware.
 
+Device measurements found channel 0 louder than channel 1 but still only about
+19 PCM RMS after AEC at less than one metre, versus Cortana's 655 PCM RMS VAD
+threshold. Production capture therefore uses AGC2 fixed digital gain at 42 dB
+with its limiter, replacing AGC1's 31 dB ceiling. The gain can be overridden
+for foreground acceptance with `--capture-gain-db 0..49`; the AEC diagnostic
+uses the same 42 dB default and accepts `--gain-db 0..49`. Recheck near- and
+three-metre RMS, clipping, wake/VAD/STT reliability, and AEC with the next image.
+
 #### T3.4 Remove all local wake code/assets — Medium
 
 - Delete MicroWakeWord/OpenWakeWord/external wake code, TFLite runtime and

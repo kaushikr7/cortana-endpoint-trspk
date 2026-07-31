@@ -13,6 +13,8 @@ class WebRtcProcessor {
    public:
     static constexpr int kSampleRate     = 16'000;
     static constexpr int kFrameSamples   = 160;   // 10 ms @ 16 kHz
+    static constexpr int kDefaultGainDb  = 42;
+    static constexpr int kMaximumGainDb  = 49;
 
     WebRtcProcessor(int agc_level, int ns_level, bool aec_enabled);
     ~WebRtcProcessor();

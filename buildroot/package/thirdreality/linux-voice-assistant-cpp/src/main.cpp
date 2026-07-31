@@ -88,6 +88,8 @@ void PrintUsage(const char* argv0) {
         "                           0-based microphone channel (default: 0)\n"
         "  --capture-ref-channels <r>\n"
         "                           none, one, or two AEC channels (default: 2,3)\n"
+        "  --capture-gain-db <n>   AGC2 fixed digital gain, 0-49 "
+        "(default: 42)\n"
         "  --debug                 Enable debug logging\n"
         "  --help                  Show this help and exit\n",
         argv0);
@@ -103,6 +105,8 @@ struct CliOptions {
     std::string capture_alsa_device = "hw:0,4";
     unsigned capture_mic_channel = 0;
     std::array<int, 2> capture_ref_channels = {2, 3};
+    unsigned capture_gain_db = static_cast<unsigned>(
+        lva::audio::WebRtcProcessor::kDefaultGainDb);
     bool debug = false;
 };
 
@@ -149,6 +153,7 @@ bool ParseCli(int argc, char** argv, CliOptions& output) {
     constexpr int kOptCaptureAlsaDevice = 1004;
     constexpr int kOptCaptureMicChannel = 1005;
     constexpr int kOptCaptureRefChannels = 1006;
+    constexpr int kOptCaptureGainDb = 1007;
     static const option kOptions[] = {
         {"check-config", no_argument, nullptr, kOptCheckConfig},
         {"status", no_argument, nullptr, kOptStatus},
@@ -160,6 +165,7 @@ bool ParseCli(int argc, char** argv, CliOptions& output) {
          kOptCaptureMicChannel},
         {"capture-ref-channels", required_argument, nullptr,
          kOptCaptureRefChannels},
+        {"capture-gain-db", required_argument, nullptr, kOptCaptureGainDb},
         {"debug", no_argument, nullptr, 'd'},
         {"help", no_argument, nullptr, 'h'},
         {nullptr, 0, nullptr, 0},
@@ -200,6 +206,15 @@ bool ParseCli(int argc, char** argv, CliOptions& output) {
                 if (!ParseReferenceChannels(
                         optarg, &output.capture_ref_channels)) {
                     std::fprintf(stderr, "Invalid capture reference channels\n");
+                    return false;
+                }
+                break;
+            case kOptCaptureGainDb:
+                if (!ParseUnsigned(optarg, &output.capture_gain_db) ||
+                    output.capture_gain_db >
+                        static_cast<unsigned>(
+                            lva::audio::WebRtcProcessor::kMaximumGainDb)) {
+                    std::fprintf(stderr, "Invalid capture gain dB\n");
                     return false;
                 }
                 break;
@@ -337,6 +352,8 @@ int main(int argc, char** argv) {
     capture_options.capture.alsa_device = cli.capture_alsa_device;
     capture_options.capture.mic_channel = cli.capture_mic_channel;
     capture_options.capture.ref_channels = cli.capture_ref_channels;
+    capture_options.automatic_gain_db =
+        static_cast<int>(cli.capture_gain_db);
     lva::audio::CapturePipeline capture(std::move(capture_options));
     lva::audio::CaptureSupervisor capture_supervisor({
         .start = [&capture] { return capture.Start(); },
