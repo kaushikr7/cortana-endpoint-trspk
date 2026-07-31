@@ -24,6 +24,7 @@
 #include "audio/CapturePipeline.h"
 #include "audio/CaptureSupervisor.h"
 #include "audio/MicrophoneIngress.h"
+#include "audio/PlaybackDmaKeepalive.h"
 #include "audio/RawPcmPlayer.h"
 #include "config/EndpointConfig.h"
 #include "cortana/CurlSessionTransport.h"
@@ -348,6 +349,15 @@ int main(int argc, char** argv) {
             return lva::audio::MakePulseAudioSink(
                 "alsa_output.hw_0_1");
         });
+    lva::audio::PlaybackDmaKeepalive playback_keepalive(
+        [] {
+            return lva::audio::MakePulseAudioSink(
+                "alsa_output.hw_0_1", "Capture DMA keepalive");
+        });
+    if (!playback_keepalive.Start()) {
+        LVA_LOGE(kTag, "%s",
+                 "playback DMA keepalive did not become ready");
+    }
     lva::audio::CapturePipeline::Options capture_options;
     capture_options.capture.alsa_device = cli.capture_alsa_device;
     capture_options.capture.mic_channel = cli.capture_mic_channel;
@@ -503,6 +513,7 @@ int main(int argc, char** argv) {
             const auto metrics = capture.GetMetrics();
             const auto ingress_metrics = ingress.GetMetrics();
             const auto playback_metrics = player.Snapshot();
+            const auto keepalive_metrics = playback_keepalive.Snapshot();
             const auto runtime_metrics = runtime.Metrics();
             LVA_LOGI(kTag,
                      "capture running=%d periods=%llu samples=%llu "
@@ -520,7 +531,10 @@ int main(int argc, char** argv) {
                      "capture_attempts=%llu capture_boundaries=%llu "
                      "capture_planned_restarts=%llu "
                      "capture_exits=%llu capture_stalls=%llu "
-                     "capture_consecutive_failures=%u capture_retry_ms=%llu",
+                     "capture_consecutive_failures=%u capture_retry_ms=%llu "
+                     "keepalive_ready=%d keepalive_streams=%llu "
+                     "keepalive_chunks=%llu keepalive_restarts=%llu "
+                     "keepalive_errors=%llu",
                      metrics.running ? 1 : 0,
                      static_cast<unsigned long long>(metrics.periods_captured),
                      static_cast<unsigned long long>(metrics.samples_captured),
@@ -586,12 +600,22 @@ int main(int argc, char** argv) {
                          capture_status.stalled_workers),
                      capture_status.consecutive_failures,
                      static_cast<unsigned long long>(
-                         capture_status.retry_in_ms));
+                         capture_status.retry_in_ms),
+                     keepalive_metrics.ready ? 1 : 0,
+                     static_cast<unsigned long long>(
+                         keepalive_metrics.streams_opened),
+                     static_cast<unsigned long long>(
+                         keepalive_metrics.chunks_written),
+                     static_cast<unsigned long long>(
+                         keepalive_metrics.restarts),
+                     static_cast<unsigned long long>(
+                         keepalive_metrics.errors));
         }
     }
 
     home_button.Stop();
     capture_supervisor.Stop();
+    playback_keepalive.Stop();
     session.Stop();
     const int signal = g_shutdown_signal.load(std::memory_order_relaxed);
     LVA_LOGI(kTag, "exiting after signal %d", signal);

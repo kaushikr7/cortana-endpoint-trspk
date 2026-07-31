@@ -61,6 +61,7 @@ These checks do not build firmware or access a device:
 ./script/test_audio_gain_config.sh
 ./script/test_capture_supervisor.sh
 ./script/test_pcm_playback.sh
+./script/test_playback_dma_keepalive.sh
 ./script/test_endpoint_state.sh
 ./script/test_endpoint_runtime.sh
 ./script/test_netmonitor.sh

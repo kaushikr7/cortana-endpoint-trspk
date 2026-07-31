@@ -50,6 +50,7 @@ add_executable(linux-voice-assistant-cpp
     src/cortana/SessionClient.cpp
     src/state/Preferences.cpp
     src/audio/PulseAudioSink.cpp
+    src/audio/PlaybackDmaKeepalive.cpp
     src/audio/RawPcmPlayer.cpp
     src/audio/PcmRingBuffer.cpp
     src/audio/AudioCapture.cpp

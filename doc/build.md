@@ -1078,6 +1078,17 @@ unmute performs an immediate planned restart with fresh queues and AEC state,
 avoiding the measured delayed ALSA stall and recovery flash. The forced ALSA
 failure and recovery remains a T5.4 device acceptance check.
 
+A subsequent muted soak proved the underlying Amlogic capture path can also
+stall while completely idle, independent of mute transitions. Production now
+opens a dedicated 48 kHz stereo silent PulseAudio stream before starting ALSA
+capture and keeps it open for the process lifetime so the playback DMA feeding
+the codec loopback remains active. The stream retries independently if
+PulseAudio fails, and periodic diagnostics expose its ready, stream, restart,
+and error counters. T5.4 must include a long muted soak with
+`capture_stalls=0`, `keepalive_ready=1`, and `keepalive_errors=0`, followed by
+real response playback to confirm that the silent stream neither suppresses
+TTS nor breaks the AEC reference channels.
+
 #### T5.3 Server-side device registration — Medium
 
 - Add the satellite with explicit continuous/server-wake capability, trusted

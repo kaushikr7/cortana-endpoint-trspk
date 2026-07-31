@@ -31,6 +31,8 @@ public:
     virtual void Close() noexcept = 0;
 };
 
-std::unique_ptr<PcmSink> MakePulseAudioSink(std::string sink_name);
+std::unique_ptr<PcmSink> MakePulseAudioSink(
+    std::string sink_name,
+    std::string stream_name = "Cortana response");
 
 }  // namespace lva::audio

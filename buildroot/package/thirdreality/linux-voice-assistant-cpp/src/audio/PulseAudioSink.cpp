@@ -16,8 +16,9 @@ namespace {
 
 class PulseAudioSink final : public PcmSink {
 public:
-    explicit PulseAudioSink(std::string sink_name)
-        : sink_name_(std::move(sink_name)) {}
+    PulseAudioSink(std::string sink_name, std::string stream_name)
+        : sink_name_(std::move(sink_name)),
+          stream_name_(std::move(stream_name)) {}
 
     ~PulseAudioSink() override { Close(); }
 
@@ -51,7 +52,7 @@ public:
             "cortana-endpoint-trspk",
             PA_STREAM_PLAYBACK,
             sink_name_.empty() ? nullptr : sink_name_.c_str(),
-            "Cortana response",
+            stream_name_.c_str(),
             &sample_spec,
             nullptr,
             &buffer_attr,
@@ -127,13 +128,16 @@ public:
 
 private:
     std::string sink_name_;
+    std::string stream_name_;
     pa_simple* stream_ = nullptr;
 };
 
 }  // namespace
 
-std::unique_ptr<PcmSink> MakePulseAudioSink(std::string sink_name) {
-    return std::make_unique<PulseAudioSink>(std::move(sink_name));
+std::unique_ptr<PcmSink> MakePulseAudioSink(
+    std::string sink_name, std::string stream_name) {
+    return std::make_unique<PulseAudioSink>(
+        std::move(sink_name), std::move(stream_name));
 }
 
 }  // namespace lva::audio
