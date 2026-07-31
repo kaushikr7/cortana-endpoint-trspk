@@ -5,6 +5,7 @@
 
 #include "audio/CaptureFrame.h"
 #include "audio/MicrophoneIngress.h"
+#include "audio/PlaybackCaptureGate.h"
 #include "audio/PcmRingBuffer.h"
 
 namespace {
@@ -161,6 +162,27 @@ void TestIngressFramingGenerationMuteAndPressure() {
     assert(metrics.samples_discarded == 1600);
 }
 
+void TestPlaybackCaptureGateIncludesEchoTail() {
+    using namespace std::chrono_literals;
+    using Gate = lva::audio::PlaybackCaptureGate;
+    Gate gate(300ms);
+    const auto start = Gate::Clock::time_point{} + 1s;
+
+    assert(!gate.Update(false, start));
+    assert(gate.Update(true, start + 1ms));
+    assert(gate.Update(true, start + 2s));
+    assert(gate.Update(false, start + 2001ms));
+    assert(gate.Update(false, start + 2300ms));
+    assert(!gate.Update(false, start + 2301ms));
+
+    assert(gate.Update(true, start + 3s));
+    assert(gate.Update(false, start + 3001ms));
+    assert(gate.Update(true, start + 3100ms));
+    assert(gate.Update(false, start + 3101ms));
+    assert(gate.Update(false, start + 3400ms));
+    assert(!gate.Update(false, start + 3401ms));
+}
+
 }  // namespace
 
 int main() {
@@ -168,4 +190,5 @@ int main() {
     TestInvalidLayoutsFailClosed();
     TestBoundedQueueMetricsAndDiscard();
     TestIngressFramingGenerationMuteAndPressure();
+    TestPlaybackCaptureGateIncludesEchoTail();
 }

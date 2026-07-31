@@ -34,7 +34,8 @@ message(STATUS "Found webrtc-audio-processing ${WEBRTC_APM_VERSION} via pkg-conf
 pkg_check_modules(LIBCURL REQUIRED IMPORTED_TARGET libcurl)
 message(STATUS "Found libcurl ${LIBCURL_VERSION} via pkg-config")
 
-# alsa-lib: production capture and the AEC loopback diagnostic.
+# alsa-lib: production capture through the PulseAudio plugin and the retained
+# hardware-loopback AEC diagnostic.
 pkg_check_modules(ALSA REQUIRED IMPORTED_TARGET alsa)
 message(STATUS "Found alsa-lib ${ALSA_VERSION} via pkg-config")
 
@@ -51,7 +52,7 @@ add_executable(linux-voice-assistant-cpp
     src/state/Preferences.cpp
     src/audio/ConfirmationTone.cpp
     src/audio/PulseAudioSink.cpp
-    src/audio/PlaybackDmaKeepalive.cpp
+    src/audio/PlaybackCaptureGate.cpp
     src/audio/RawPcmPlayer.cpp
     src/audio/PcmRingBuffer.cpp
     src/audio/AudioCapture.cpp

@@ -4,7 +4,6 @@
 #include <unistd.h>
 
 #include <atomic>
-#include <array>
 #include <chrono>
 #include <cerrno>
 #include <csignal>
@@ -25,7 +24,7 @@
 #include "audio/CaptureSupervisor.h"
 #include "audio/ConfirmationTone.h"
 #include "audio/MicrophoneIngress.h"
-#include "audio/PlaybackDmaKeepalive.h"
+#include "audio/PlaybackCaptureGate.h"
 #include "audio/RawPcmPlayer.h"
 #include "config/EndpointConfig.h"
 #include "cortana/CurlSessionTransport.h"
@@ -87,11 +86,9 @@ void PrintUsage(const char* argv0) {
         "  --credential-file <p>   Cortana credential file\n"
         "                           (default: /data/cortana/credential)\n"
         "  --capture-alsa-device <d>\n"
-        "                           ALSA capture device (default: hw:0,4)\n"
+        "                           ALSA capture device (default: cortana_capture)\n"
         "  --capture-mic-channel <n>\n"
         "                           0-based microphone channel (default: 0)\n"
-        "  --capture-ref-channels <r>\n"
-        "                           none, one, or two AEC channels (default: 2,3)\n"
         "  --capture-gain-db <n>   AGC2 fixed digital gain, 0-49 "
         "(default: 42)\n"
         "  --debug                 Enable debug logging\n"
@@ -106,9 +103,8 @@ struct CliOptions {
     std::filesystem::path config_file = lva::config::kDefaultConfigPath;
     std::filesystem::path credential_file =
         lva::config::kDefaultCredentialPath;
-    std::string capture_alsa_device = "hw:0,4";
+    std::string capture_alsa_device = "cortana_capture";
     unsigned capture_mic_channel = 0;
-    std::array<int, 2> capture_ref_channels = {2, 3};
     unsigned capture_gain_db = static_cast<unsigned>(
         lva::audio::WebRtcProcessor::kDefaultGainDb);
     bool debug = false;
@@ -126,29 +122,6 @@ bool ParseUnsigned(std::string_view text, unsigned* output) {
     return true;
 }
 
-bool ParseReferenceChannels(std::string_view text,
-                            std::array<int, 2>* output) {
-    if (text.empty() || text == "none") {
-        *output = {-1, -1};
-        return true;
-    }
-    const std::size_t comma = text.find(',');
-    if (comma != std::string_view::npos &&
-        text.find(',', comma + 1) != std::string_view::npos) {
-        return false;
-    }
-    unsigned first = 0;
-    unsigned second = 0;
-    if (!ParseUnsigned(text.substr(0, comma), &first)) return false;
-    if (comma == std::string_view::npos) {
-        *output = {static_cast<int>(first), -1};
-        return true;
-    }
-    if (!ParseUnsigned(text.substr(comma + 1), &second)) return false;
-    *output = {static_cast<int>(first), static_cast<int>(second)};
-    return true;
-}
-
 bool ParseCli(int argc, char** argv, CliOptions& output) {
     constexpr int kOptCheckConfig = 1000;
     constexpr int kOptStatus = 1001;
@@ -156,7 +129,6 @@ bool ParseCli(int argc, char** argv, CliOptions& output) {
     constexpr int kOptCredentialFile = 1003;
     constexpr int kOptCaptureAlsaDevice = 1004;
     constexpr int kOptCaptureMicChannel = 1005;
-    constexpr int kOptCaptureRefChannels = 1006;
     constexpr int kOptCaptureGainDb = 1007;
     static const option kOptions[] = {
         {"check-config", no_argument, nullptr, kOptCheckConfig},
@@ -167,8 +139,6 @@ bool ParseCli(int argc, char** argv, CliOptions& output) {
          kOptCaptureAlsaDevice},
         {"capture-mic-channel", required_argument, nullptr,
          kOptCaptureMicChannel},
-        {"capture-ref-channels", required_argument, nullptr,
-         kOptCaptureRefChannels},
         {"capture-gain-db", required_argument, nullptr, kOptCaptureGainDb},
         {"debug", no_argument, nullptr, 'd'},
         {"help", no_argument, nullptr, 'h'},
@@ -203,13 +173,6 @@ bool ParseCli(int argc, char** argv, CliOptions& output) {
             case kOptCaptureMicChannel:
                 if (!ParseUnsigned(optarg, &output.capture_mic_channel)) {
                     std::fprintf(stderr, "Invalid capture microphone channel\n");
-                    return false;
-                }
-                break;
-            case kOptCaptureRefChannels:
-                if (!ParseReferenceChannels(
-                        optarg, &output.capture_ref_channels)) {
-                    std::fprintf(stderr, "Invalid capture reference channels\n");
                     return false;
                 }
                 break;
@@ -294,6 +257,11 @@ const char* PlaybackStateName(lva::audio::RawPlaybackState state) {
     return "error";
 }
 
+bool PlaybackActive(lva::audio::RawPlaybackState state) {
+    return state == lva::audio::RawPlaybackState::Playing ||
+        state == lva::audio::RawPlaybackState::Draining;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -346,9 +314,7 @@ int main(int argc, char** argv) {
     lva::audio::RawPcmPlayer player(
         lva::audio::RawPcmPlayer::Options{},
         [] {
-            // This is the PulseAudio sink backed by ALSA hw:0,1. The codec's
-            // hardware loopback exposes the same output on capture channels
-            // 2/3 for AEC.
+            // This is the PulseAudio sink backed by ALSA hw:0,1.
             return lva::audio::MakePulseAudioSink(
                 "alsa_output.hw_0_1");
         });
@@ -363,19 +329,9 @@ int main(int argc, char** argv) {
             return lva::audio::MakePulseAudioSink(
                 "alsa_output.hw_0_1", "Volume feedback");
         });
-    lva::audio::PlaybackDmaKeepalive playback_keepalive(
-        [] {
-            return lva::audio::MakePulseAudioSink(
-                "alsa_output.hw_0_1", "Capture DMA keepalive");
-        });
-    if (!playback_keepalive.Start()) {
-        LVA_LOGE(kTag, "%s",
-                 "playback DMA keepalive did not become ready");
-    }
     lva::audio::CapturePipeline::Options capture_options;
     capture_options.capture.alsa_device = cli.capture_alsa_device;
     capture_options.capture.mic_channel = cli.capture_mic_channel;
-    capture_options.capture.ref_channels = cli.capture_ref_channels;
     capture_options.automatic_gain_db =
         static_cast<int>(cli.capture_gain_db);
     lva::audio::CapturePipeline capture(std::move(capture_options));
@@ -399,6 +355,7 @@ int main(int argc, char** argv) {
             session.DiscardAudioFrames();
             return false;
         });
+    lva::audio::PlaybackCaptureGate playback_capture_gate(300ms);
 
     std::uint64_t activation_sequence = 0;
     lva::cortana::EndpointRuntime runtime({
@@ -485,6 +442,7 @@ int main(int argc, char** argv) {
 
     lva::cortana::SessionPhase logged_phase =
         lva::cortana::SessionPhase::Stopped;
+    bool microphone_tx_suppressed = false;
     auto next_capture_metrics = std::chrono::steady_clock::now() + 30s;
     while (g_shutdown_signal.load(std::memory_order_relaxed) == 0) {
         if (home_button_fd >= 0) {
@@ -545,9 +503,24 @@ int main(int argc, char** argv) {
         const auto now = std::chrono::steady_clock::now();
         capture_supervisor.Poll(now);
         const auto capture_status = capture_supervisor.Snapshot(now);
+        const auto playback_status = player.Snapshot();
+        const auto feedback_status = volume_feedback.Snapshot();
+        const bool playback_active =
+            endpoint.activity == lva::cortana::Activity::Speaking ||
+            PlaybackActive(playback_status.state) ||
+            PlaybackActive(feedback_status.state);
+        const bool suppress_microphone_tx =
+            playback_capture_gate.Update(playback_active, now);
+        if (suppress_microphone_tx && !microphone_tx_suppressed) {
+            // Remove frames already accepted by the session thread before
+            // response playback became visible in the main loop.
+            session.DiscardAudioFrames();
+        }
+        microphone_tx_suppressed = suppress_microphone_tx;
         (void)ingress.Pump(
             snapshot,
             endpoint.muted ||
+                microphone_tx_suppressed ||
                 capture_status.state !=
                     lva::audio::CaptureLifecycleState::Ready);
         lva::tr::EndpointLedPolicy::Apply(
@@ -566,7 +539,6 @@ int main(int argc, char** argv) {
             const auto metrics = capture.GetMetrics();
             const auto ingress_metrics = ingress.GetMetrics();
             const auto playback_metrics = player.Snapshot();
-            const auto keepalive_metrics = playback_keepalive.Snapshot();
             const auto runtime_metrics = runtime.Metrics();
             LVA_LOGI(kTag,
                      "capture running=%d periods=%llu samples=%llu "
@@ -585,9 +557,7 @@ int main(int argc, char** argv) {
                      "capture_planned_restarts=%llu "
                      "capture_exits=%llu capture_stalls=%llu "
                      "capture_consecutive_failures=%u capture_retry_ms=%llu "
-                     "keepalive_ready=%d keepalive_streams=%llu "
-                     "keepalive_chunks=%llu keepalive_restarts=%llu "
-                     "keepalive_errors=%llu",
+                     "mic_tx_suppressed=%d",
                      metrics.running ? 1 : 0,
                      static_cast<unsigned long long>(metrics.periods_captured),
                      static_cast<unsigned long long>(metrics.samples_captured),
@@ -654,21 +624,12 @@ int main(int argc, char** argv) {
                      capture_status.consecutive_failures,
                      static_cast<unsigned long long>(
                          capture_status.retry_in_ms),
-                     keepalive_metrics.ready ? 1 : 0,
-                     static_cast<unsigned long long>(
-                         keepalive_metrics.streams_opened),
-                     static_cast<unsigned long long>(
-                         keepalive_metrics.chunks_written),
-                     static_cast<unsigned long long>(
-                         keepalive_metrics.restarts),
-                     static_cast<unsigned long long>(
-                         keepalive_metrics.errors));
+                     microphone_tx_suppressed ? 1 : 0);
         }
     }
 
     home_button.Stop();
     capture_supervisor.Stop();
-    playback_keepalive.Stop();
     session.Stop();
     const int signal = g_shutdown_signal.load(std::memory_order_relaxed);
     LVA_LOGI(kTag, "exiting after signal %d", signal);

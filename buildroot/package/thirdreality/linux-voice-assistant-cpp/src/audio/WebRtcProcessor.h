@@ -28,11 +28,9 @@ class WebRtcProcessor {
 
     bool ProcessReverse(std::int16_t* buf, std::size_t n);
 
-    // Reset the echo canceller (rebuild the APM) so it re-converges
-    // from a clean state. Call after an ALSA xrun/recover, where the
-    // mic and reference streams are no longer aligned. No-op when AEC
-    // is disabled.
-    void ResetEcho();
+    // Rebuild all enabled processing after a capture discontinuity so AGC,
+    // noise suppression, and optional AEC resume from fresh state.
+    void Reset();
 
     int  agc_level()   const { return agc_level_; }
     int  ns_level()    const { return ns_level_; }
@@ -42,8 +40,8 @@ class WebRtcProcessor {
     // Caller must hold apm_mutex_.
     void RebuildLocked();
 
-    // Serializes all access to apm_: Process()/ProcessReverse()/
-    // ResetEcho() run on the capture thread, SetLevels() on the main
+    // Serializes all access to apm_: Process()/ProcessReverse()/Reset() run
+    // on the capture thread, SetLevels() on the main
     // thread, so APM rebuilds must not race.
     std::mutex apm_mutex_;
 

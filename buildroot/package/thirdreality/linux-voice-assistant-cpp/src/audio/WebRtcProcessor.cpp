@@ -68,11 +68,13 @@ void WebRtcProcessor::RebuildLocked() {
     }
 
     ::webrtc::AudioProcessing::Config cfg;
+    // Keep DC/low-frequency rejection on the stable direct-microphone path;
+    // it is useful independently of whether an AEC reference is available.
+    cfg.high_pass_filter.enabled = true;
     if (aec_enabled_) {
         cfg.echo_canceller.enabled = true;
         cfg.echo_canceller.mobile_mode = false;
         cfg.echo_canceller.enforce_high_pass_filtering = true;
-        cfg.high_pass_filter.enabled = true;  // aids AEC convergence
     }
     if (agc_level_ > 0) {
         // GainController1 caps fixed digital gain at 31 dB. Measurements on
@@ -99,7 +101,7 @@ void WebRtcProcessor::RebuildLocked() {
                               WebRtcProcessor::kMaximumGainDb)
                  : 0,
              ns_level_,
-             aec_enabled_ ? 1 : 0);
+             1);
     apm_ = apm;
 }
 
@@ -126,10 +128,9 @@ bool WebRtcProcessor::ProcessReverse(std::int16_t* buf,
     return true;
 }
 
-void WebRtcProcessor::ResetEcho() {
+void WebRtcProcessor::Reset() {
     std::lock_guard<std::mutex> lk(apm_mutex_);
-    if (!aec_enabled_) return;
-    LVA_LOGW(kTag, "resetting echo canceller (post-xrun re-converge)");
+    LVA_LOGW(kTag, "resetting audio processing after capture discontinuity");
     RebuildLocked();
 }
 

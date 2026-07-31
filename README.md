@@ -18,10 +18,12 @@ The retained `linux-voice-assistant-cpp` binary name now hosts:
 - centralized ring LED state, home-button input, and mute GPIO handling.
 
 There is no ESPHome listener, Home Assistant discovery, protobuf control
-plane, Sendspin client, or supervisor HTTP API. Continuous ALSA capture and
-hardware-loopback AEC feed generation-tagged 20 ms PCM frames over the bounded
-WSS session transport. Cortana response playback follows in a subsequent plan
-phase.
+plane, Sendspin client, or supervisor HTTP API. Continuous capture uses the
+stable PulseAudio source backed by the direct `hw:0,2` PDM microphones, then
+WebRTC high-pass filtering, AGC2, and noise suppression feed generation-tagged
+20 ms PCM frames over the bounded WSS session transport. Response playback is
+locally isolated from microphone transmission because this endpoint does not
+advertise acoustic barge-in.
 
 ## Repository setup
 
@@ -61,7 +63,6 @@ These checks do not build firmware or access a device:
 ./script/test_audio_gain_config.sh
 ./script/test_capture_supervisor.sh
 ./script/test_pcm_playback.sh
-./script/test_playback_dma_keepalive.sh
 ./script/test_endpoint_state.sh
 ./script/test_endpoint_runtime.sh
 ./script/test_netmonitor.sh

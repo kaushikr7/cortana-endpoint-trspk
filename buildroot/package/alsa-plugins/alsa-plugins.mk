@@ -17,12 +17,18 @@ ALSA_PLUGINS_CONF_OPTS = \
 	--localstatedir=/var \
 	--disable-jack \
 	--disable-usbstream \
-	--enable-pulseaduio \
 	--disable-libav \
 	--disable-avcodec \
 	--disable-maemo-plugin \
 	--disable-maemo-resource-manager \
 	--with-speex=builtin
+
+ifeq ($(BR2_PACKAGE_PULSEAUDIO),y)
+ALSA_PLUGINS_CONF_OPTS += --enable-pulseaudio
+ALSA_PLUGINS_DEPENDENCIES += pulseaudio
+else
+ALSA_PLUGINS_CONF_OPTS += --disable-pulseaudio
+endif
 
 ifeq ($(BR2_PACKAGE_ALSA_UTILS),y)
 ALSA_PLUGINS_DEPENDENCIES += alsa-utils

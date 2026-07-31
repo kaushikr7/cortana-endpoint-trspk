@@ -17,6 +17,8 @@ grep -q 'cfg.gain_controller2.enabled = true' \
     "$source_dir/audio/WebRtcProcessor.cpp"
 grep -q 'cfg.gain_controller2.adaptive_digital.enabled = false' \
     "$source_dir/audio/WebRtcProcessor.cpp"
+grep -q 'cfg.high_pass_filter.enabled = true' \
+    "$source_dir/audio/WebRtcProcessor.cpp"
 if grep -q 'cfg.gain_controller1.enabled = true' \
     "$source_dir/audio/WebRtcProcessor.cpp"; then
     echo "production capture still enables the 31 dB-limited AGC1" >&2

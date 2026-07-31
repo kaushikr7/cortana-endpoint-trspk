@@ -113,13 +113,6 @@ bool AudioCapture::Start() {
              pcm, hardware, &period, nullptr)) < 0) {
         return fail("snd_pcm_hw_params_set_period_size_near", result);
     }
-    if (period != options_.frames_per_read) {
-        LVA_LOGE(kTag, "ALSA selected period %lu instead of %zu",
-                 static_cast<unsigned long>(period),
-                 options_.frames_per_read);
-        ::snd_pcm_close(pcm);
-        return false;
-    }
     snd_pcm_uframes_t buffer_frames = kSampleRate / 2;
     if ((result = ::snd_pcm_hw_params_set_buffer_size_near(
              pcm, hardware, &buffer_frames)) < 0) {
@@ -134,14 +127,6 @@ bool AudioCapture::Start() {
              pcm, &actual_buffer, &actual_period)) < 0) {
         return fail("snd_pcm_get_params", result);
     }
-    if (actual_period != options_.frames_per_read) {
-        LVA_LOGE(kTag, "ALSA committed period %lu instead of %zu",
-                 static_cast<unsigned long>(actual_period),
-                 options_.frames_per_read);
-        ::snd_pcm_close(pcm);
-        return false;
-    }
-
     queue_.Reset();
     periods_captured_.store(0, std::memory_order_relaxed);
     samples_captured_.store(0, std::memory_order_relaxed);
@@ -160,10 +145,11 @@ bool AudioCapture::Start() {
     thread_ = std::thread([this] { ThreadLoop(); });
 
     LVA_LOGI(kTag,
-             "started ALSA device=%s rate=%u channels=%u period=%zu "
-             "buffer=%lu mic=%u reference=%d,%d queue=%zu",
+             "started ALSA device=%s rate=%u channels=%u read=%zu "
+             "period=%lu buffer=%lu mic=%u reference=%d,%d queue=%zu",
              options_.alsa_device.c_str(), kSampleRate,
              options_.alsa_channels, options_.frames_per_read,
+             static_cast<unsigned long>(actual_period),
              static_cast<unsigned long>(actual_buffer),
              options_.mic_channel, options_.ref_channels[0],
              options_.ref_channels[1], queue_.Capacity());
@@ -238,9 +224,7 @@ void AudioCapture::ThreadLoop() {
                 error == -EIO) {
                 if (::snd_pcm_recover(pcm, error, 1) < 0) break;
                 recoveries_.fetch_add(1, std::memory_order_relaxed);
-                if (processor_ != nullptr && has_reference) {
-                    processor_->ResetEcho();
-                }
+                if (processor_ != nullptr) processor_->Reset();
                 continue;
             }
             if (!stop_requested_.load(std::memory_order_relaxed)) {
@@ -251,9 +235,7 @@ void AudioCapture::ThreadLoop() {
         }
         if (static_cast<std::size_t>(read) != period) {
             short_reads_.fetch_add(1, std::memory_order_relaxed);
-            if (processor_ != nullptr && has_reference) {
-                processor_->ResetEcho();
-            }
+            if (processor_ != nullptr) processor_->Reset();
             continue;
         }
 

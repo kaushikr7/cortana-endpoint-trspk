@@ -33,10 +33,13 @@ struct AudioCaptureMetrics {
 class AudioCapture {
 public:
     struct Options {
-        std::string alsa_device = "hw:0,4";
-        unsigned alsa_channels = 4;
+        // Capture through PulseAudio's stable default source, which is backed
+        // by the board's direct PDM device hw:0,2. The hw:0,4 loopback DAI
+        // intermittently stops delivering periods on this hardware.
+        std::string alsa_device = "cortana_capture";
+        unsigned alsa_channels = 2;
         unsigned mic_channel = 0;
-        std::array<int, 2> ref_channels = {2, 3};
+        std::array<int, 2> ref_channels = {-1, -1};
         std::size_t frames_per_read = 160;  // exactly 10 ms at 16 kHz
     };
 

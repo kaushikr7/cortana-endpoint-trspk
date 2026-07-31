@@ -252,9 +252,9 @@ response PCM until the matching `audio.end`.
 
 The existing Third Reality assistant expects a TTS URL and uses libmpv. Cortana
 does not send a URL. Add a bounded raw-PCM player. Prefer PulseAudio playback so
-the system audio path performs resampling and remains visible to the existing
-hardware-loopback AEC reference. Validate every announced format and support
-PCM16 only initially.
+the system audio path performs resampling. Gate microphone transmission during
+physical playback and its short room-echo tail while `bargeInMode=none`.
+Validate every announced format and support PCM16 only initially.
 
 Send `playback.started` only when local playback actually starts. Send
 `playback.completed` only after the local output queue drains. On physical
@@ -395,10 +395,9 @@ The explicit server capability profile for the first device should be:
 }
 ```
 
-Start with `bargeInMode=none`. After hardware-loopback AEC is proven during
-response playback, change it to `full_duplex` and validate server wake-word
-interruption. A continuous endpoint does not use the satellite `wake_word`
-barge-in mode.
+Use `bargeInMode=none` for production. Full-duplex interruption remains an
+optional experiment requiring a separately proven stable reference path; a
+continuous endpoint does not use the satellite `wake_word` barge-in mode.
 
 If the device can hear the same room as a Halo tablet or another endpoint, add
 the satellite IDs to the appropriate Cortana acoustic overlap group so one wake
@@ -492,8 +491,8 @@ queue, and return to the appropriate connection state.
 
 Retain or extract these proven hardware-oriented parts:
 
-- ALSA `AudioCapture` at 16 kHz with four-channel input splitting;
-- `WebRtcProcessor` AGC, noise suppression, and hardware-loopback AEC;
+- ALSA `AudioCapture` at 16 kHz through PulseAudio's stable direct PDM source;
+- `WebRtcProcessor` high-pass filtering, AGC2, and noise suppression;
 - `PcmRingBuffer`, revised to expose bounded/drop metrics cleanly;
 - microphone mute GPIO handling;
 - home-button Linux input handling after removing HA coupling;
@@ -588,9 +587,9 @@ This is a voice-only endpoint. Remove Sendspin rather than adapting or
 supervising it. Cortana TTS and short local device sounds are the only required
 application playback paths.
 
-Use the same physical output path for TTS and the AEC reference. Validate that
-PulseAudio playback appears in ALSA reference channels 2 and 3. Do not advertise
-full-duplex barge-in until measured playback echo is sufficiently cancelled.
+Use the physical TRSPK output for TTS. Production does not advertise
+full-duplex barge-in; suppress microphone transmission through playback and a
+bounded echo tail instead of depending on the unstable loopback DAI.
 
 ## Build and development workflow
 
@@ -631,7 +630,7 @@ Before changing code, complete one baseline build and retain its `.img` and
 
 - ALSA capture/playback device names and formats;
 - PulseAudio source/sink names;
-- microphone and AEC reference channel behavior;
+- direct PDM microphone channel behavior and playback echo isolation;
 - LED, mute, button, ADB, SSH, NTP, and Wi-Fi behavior;
 - CPU and memory at idle, during capture, and during playback.
 
@@ -856,14 +855,16 @@ validated configuration or credential changes.
 
 Implementation paths are `src/audio/CapturePipeline.{h,cpp}`,
 `CaptureFrame.{h,cpp}`, `AudioCapture.{h,cpp}`, and `PcmRingBuffer.{h,cpp}`.
-The production path is ALSA-only: each exact 10 ms four-channel period is
-split into mono microphone and loopback reference, processed through WebRTC,
-and written to one bounded SPSC queue. Metrics expose queue capacity/current
-depth/high-water mark, written/read/dropped/discarded samples, successful AEC
-reference periods, ALSA recoveries and short reads, processing failures, last
-period time, and worst processing duration. The main binary deliberately drains
-the queue until T3.2 supplies generation-aware WSS transport, preventing stale
-latency without coupling capture to any local wake scanner.
+The original four-channel production path was superseded after device soaks
+proved the Amlogic loopback DAI intermittently stalls. Production now opens the
+explicit ALSA `cortana_capture` PCM at 16 kHz stereo, which maps through
+PulseAudio to the stable direct PDM source `hw:0,2`, selects microphone channel
+0, and applies WebRTC high-pass filtering, AGC2, and noise suppression before
+writing to the bounded SPSC queue. The four-channel loopback path remains only
+in `aec_loopback_test` as a
+development diagnostic. The image explicitly builds the ALSA PulseAudio PCM
+plugin after PulseAudio; its previous misspelled configure flag could otherwise
+omit the `pulse` device silently.
 
 #### T3.2 Real-time PCM transport — High
 
@@ -899,12 +900,13 @@ mute, bounds, scripted backpressure, and reconnect isolation.
   proven effective on this hardware.
 
 Device measurements found channel 0 louder than channel 1 but still only about
-19 PCM RMS after AEC at less than one metre, versus Cortana's 655 PCM RMS VAD
+19 PCM RMS after processing at less than one metre, versus Cortana's 655 PCM RMS VAD
 threshold. Production capture therefore uses AGC2 fixed digital gain at 42 dB
 with its limiter, replacing AGC1's 31 dB ceiling. The gain can be overridden
 for foreground acceptance with `--capture-gain-db 0..49`; the AEC diagnostic
 uses the same 42 dB default and accepts `--gain-db 0..49`. Recheck near- and
-three-metre RMS, clipping, wake/VAD/STT reliability, and AEC with the next image.
+three-metre RMS, clipping, and wake/VAD/STT reliability on the direct PDM path
+with the next image.
 
 #### T3.4 Remove all local wake code/assets — Medium
 
@@ -933,7 +935,7 @@ no on-device wake implementation or model.
 - Implement PulseAudio PCM playback from announced format metadata with a
   bounded queue, exact drain semantics, immediate flush/stop, and errors that
   cannot deadlock the session thread.
-- Confirm playback uses the physical output seen by the AEC reference channels.
+- Confirm playback uses the physical TRSPK speaker output.
 
 Implementation uses a dedicated worker with a hard 1024 KiB ceiling and a
 format-aware 20-second application queue for announced PCM16LE mono/stereo
@@ -947,11 +949,10 @@ Completion is emitted only after PulseAudio reports an exact drain; stop,
 mute, disconnect, and cancellation discard the application queue and
 interrupt an in-progress drain before flushing. PulseAudio's device buffer is
 limited to about 100 ms. Production playback explicitly selects
-`alsa_output.hw_0_1`, which `/etc/pulse/default.pa` maps to ALSA `hw:0,1`; the
-AEC diagnostic documents and measures that output on capture channels 2/3.
+`alsa_output.hw_0_1`, which `/etc/pulse/default.pa` maps to ALSA `hw:0,1`.
 Run `script/test_pcm_playback.sh` for bounded queue, drain, interrupt, flush,
-format, and error-path coverage. Physical playback/AEC confirmation remains
-part of the next full image acceptance run.
+format, and error-path coverage. Physical playback confirmation remains part
+of the next full image acceptance run.
 
 #### T4.2 Turn control, acknowledgements, and LEDs — High
 
@@ -1015,8 +1016,9 @@ of the combined T4.3/T4.4 image build.
   pressure, physical cancel, mute during playback, disconnect, and exact
   acknowledgement ordering.
 - Preserve behavior rather than redesigning the protocol. After the host suite
-  passes, run one full image build covering T4.3 and T4.4, then validate TTS,
-  local feedback, AEC reference, image size, boot time, and runtime metrics.
+passes, run one full image build covering T4.3 and T4.4, then validate TTS,
+local feedback, direct PDM capture, echo isolation, image size, boot time, and
+runtime metrics.
 
 Implementation moves server-event playback dispatch, physical mute/home
 policy, session-generation isolation, mute synchronization, and bounded ordered
@@ -1074,23 +1076,27 @@ satellite or area identifiers, transcripts, or recorded PCM.
 Implementation note: `CaptureSupervisor` now owns starting, ready, degraded,
 and blocked transitions for the ALSA worker. Exits and two-second stalls cross
 a recovery boundary that stops capture, clears capture and session PCM, resets
-AEC state, and retries with capped exponential backoff. Periodic diagnostics
+audio-processing state, and retries with capped exponential backoff. Periodic diagnostics
 include lifecycle/failure/retry counters, and the ring shows reconnecting or
 error above turn activity while capture is degraded or blocked. A physical
-unmute performs an immediate planned restart with fresh queues and AEC state,
-avoiding the measured delayed ALSA stall and recovery flash. The forced ALSA
-failure and recovery remains a T5.4 device acceptance check.
+unmute performs an immediate planned restart with fresh queues and processing
+state, avoiding the measured delayed ALSA stall and recovery flash. The forced
+ALSA failure and recovery remains a T5.4 device acceptance check.
 
-A subsequent muted soak proved the underlying Amlogic capture path can also
-stall while completely idle, independent of mute transitions. Production now
-opens a dedicated 48 kHz stereo silent PulseAudio stream before starting ALSA
-capture and keeps it open for the process lifetime so the playback DMA feeding
-the codec loopback remains active. The stream retries independently if
-PulseAudio fails, and periodic diagnostics expose its ready, stream, restart,
-and error counters. T5.4 must include a long muted soak with
-`capture_stalls=0`, `keepalive_ready=1`, and `keepalive_errors=0`, followed by
-real response playback to confirm that the silent stream neither suppresses
-TTS nor breaks the AEC reference channels.
+A dedicated silent playback stream was tried after a muted soak exposed idle
+loopback stalls, but device logs subsequently showed six genuine `hw:0,4`
+stalls while that stream remained healthy with zero errors or restarts. The
+keepalive hypothesis is therefore rejected. A foreground PulseAudio capture
+from `alsa_input.hw_0_2` completed 90,000 10 ms blocks (approximately 15
+minutes) without a stall. Production now uses that direct PDM source through
+the explicit ALSA `cortana_capture` PCM and removes the keepalive. AGC2, noise
+suppression, and the high-pass filter remain enabled; only software AEC is
+removed. Because the endpoint advertises `bargeInMode=none`, microphone
+transmission is discarded
+during response or volume-feedback playback, including frames already queued
+for the session, and for a 300 ms echo tail before fresh capture resumes.
+Capture recovery remains fully visible on the ring; the implementation does
+not conceal individual faults.
 
 #### T5.3 Server-side device registration — Medium
 
@@ -1146,7 +1152,8 @@ Home Assistant, Sendspin, or on-device wake.
   Pulse failure, and device reboot.
 - Run at least a 24-hour connected voice soak and record final image size, boot
   time, CPU/memory, source/target sample rates, frames captured/sent/dropped,
-  average KiB/s, peak capture/session/playback buffers, latency, and AEC quality.
+  average KiB/s, peak capture/session/playback buffers, latency, microphone
+  quality, and playback echo isolation.
 - Produce signed recoverable `.swu` and `.img` artifacts plus exact USB recovery
   and provisioning documentation.
 
@@ -1156,6 +1163,8 @@ Gate: the verification contract below passes on the production image.
 
 #### T7.1 AEC and barge-in experiment — High
 
+- Reintroduce AEC only with a capture/reference transport that passes the same
+  long-soak stability gate as the production direct PDM source.
 - Confirm AEC convergence while response audio plays at representative volumes,
   rooms, distances, and speaker/microphone orientations.
 - Change `bargeInMode` to `full_duplex` and verify server-side "Cortana"
