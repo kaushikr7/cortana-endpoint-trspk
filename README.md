@@ -151,3 +151,12 @@ Both tools prompt for the password without echo, transfer the SSID and password
 as short-lived protected files over USB ADB, and make the device delete them
 before attempting association. Add `--open-network` on Linux or `-OpenNetwork`
 in PowerShell only for an intentionally open network.
+
+
+Debug
+```
+adb -s $SERIAL shell "/etc/init.d/S99ha-speaker voice-assistant stop"
+adb -s $SERIAL shell "/usr/bin/linux-voice-assistant-cpp"
+
+adb -s $SERIAL shell "/etc/init.d/S99ha-speaker voice-assistant restart"
+```
