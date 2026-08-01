@@ -23,7 +23,7 @@ CapturePipeline::CapturePipeline(Options options)
     if (options_.queue_capacity_samples <
         options_.capture.frames_per_read * 2) {
         throw std::invalid_argument(
-            "capture queue must hold at least two ALSA periods");
+            "capture queue must hold at least two source fragments");
     }
     capture_.SetProcessor(&processor_);
 }

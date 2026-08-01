@@ -85,8 +85,8 @@ void PrintUsage(const char* argv0) {
         "                           (default: /data/cortana/config.json)\n"
         "  --credential-file <p>   Cortana credential file\n"
         "                           (default: /data/cortana/credential)\n"
-        "  --capture-alsa-device <d>\n"
-        "                           ALSA capture device (default: cortana_capture)\n"
+        "  --capture-source <name> PulseAudio source\n"
+        "                           (default: alsa_input.hw_0_2)\n"
         "  --capture-mic-channel <n>\n"
         "                           0-based microphone channel (default: 0)\n"
         "  --capture-gain-db <n>   AGC2 fixed digital gain, 0-49 "
@@ -103,7 +103,7 @@ struct CliOptions {
     std::filesystem::path config_file = lva::config::kDefaultConfigPath;
     std::filesystem::path credential_file =
         lva::config::kDefaultCredentialPath;
-    std::string capture_alsa_device = "cortana_capture";
+    std::string capture_source = "alsa_input.hw_0_2";
     unsigned capture_mic_channel = 0;
     unsigned capture_gain_db = static_cast<unsigned>(
         lva::audio::WebRtcProcessor::kDefaultGainDb);
@@ -127,7 +127,7 @@ bool ParseCli(int argc, char** argv, CliOptions& output) {
     constexpr int kOptStatus = 1001;
     constexpr int kOptConfigFile = 1002;
     constexpr int kOptCredentialFile = 1003;
-    constexpr int kOptCaptureAlsaDevice = 1004;
+    constexpr int kOptCaptureSource = 1004;
     constexpr int kOptCaptureMicChannel = 1005;
     constexpr int kOptCaptureGainDb = 1007;
     static const option kOptions[] = {
@@ -135,8 +135,7 @@ bool ParseCli(int argc, char** argv, CliOptions& output) {
         {"status", no_argument, nullptr, kOptStatus},
         {"config-file", required_argument, nullptr, kOptConfigFile},
         {"credential-file", required_argument, nullptr, kOptCredentialFile},
-        {"capture-alsa-device", required_argument, nullptr,
-         kOptCaptureAlsaDevice},
+        {"capture-source", required_argument, nullptr, kOptCaptureSource},
         {"capture-mic-channel", required_argument, nullptr,
          kOptCaptureMicChannel},
         {"capture-gain-db", required_argument, nullptr, kOptCaptureGainDb},
@@ -167,8 +166,8 @@ bool ParseCli(int argc, char** argv, CliOptions& output) {
                 break;
             case kOptConfigFile: output.config_file = optarg; break;
             case kOptCredentialFile: output.credential_file = optarg; break;
-            case kOptCaptureAlsaDevice:
-                output.capture_alsa_device = optarg;
+            case kOptCaptureSource:
+                output.capture_source = optarg;
                 break;
             case kOptCaptureMicChannel:
                 if (!ParseUnsigned(optarg, &output.capture_mic_channel)) {
@@ -330,7 +329,7 @@ int main(int argc, char** argv) {
                 "alsa_output.hw_0_1", "Volume feedback");
         });
     lva::audio::CapturePipeline::Options capture_options;
-    capture_options.capture.alsa_device = cli.capture_alsa_device;
+    capture_options.capture.pulse_source = cli.capture_source;
     capture_options.capture.mic_channel = cli.capture_mic_channel;
     capture_options.automatic_gain_db =
         static_cast<int>(cli.capture_gain_db);

@@ -20,7 +20,10 @@ find_package(PkgConfig REQUIRED)
 # cost). Provides the imported target `nlohmann_json::nlohmann_json`.
 find_package(nlohmann_json CONFIG REQUIRED)
 
-# libpulse-simple: retained for the bounded raw playback implementation.
+# libpulse backs native capture; libpulse-simple backs bounded raw playback.
+pkg_check_modules(PULSE REQUIRED IMPORTED_TARGET libpulse)
+message(STATUS "Found libpulse ${PULSE_VERSION} via pkg-config")
+
 pkg_check_modules(PULSE_SIMPLE REQUIRED IMPORTED_TARGET libpulse-simple)
 message(STATUS "Found libpulse-simple ${PULSE_SIMPLE_VERSION} via pkg-config")
 
@@ -34,8 +37,7 @@ message(STATUS "Found webrtc-audio-processing ${WEBRTC_APM_VERSION} via pkg-conf
 pkg_check_modules(LIBCURL REQUIRED IMPORTED_TARGET libcurl)
 message(STATUS "Found libcurl ${LIBCURL_VERSION} via pkg-config")
 
-# alsa-lib: production capture through the PulseAudio plugin and the retained
-# hardware-loopback AEC diagnostic.
+# alsa-lib backs only the retained hardware-loopback AEC diagnostic.
 pkg_check_modules(ALSA REQUIRED IMPORTED_TARGET alsa)
 message(STATUS "Found alsa-lib ${ALSA_VERSION} via pkg-config")
 
@@ -56,6 +58,7 @@ add_executable(linux-voice-assistant-cpp
     src/audio/RawPcmPlayer.cpp
     src/audio/PcmRingBuffer.cpp
     src/audio/AudioCapture.cpp
+    src/audio/PulseAudioSource.cpp
     src/audio/CaptureFrame.cpp
     src/audio/CapturePipeline.cpp
     src/audio/CaptureSupervisor.cpp
@@ -83,8 +86,8 @@ find_package(Threads REQUIRED)
 target_link_libraries(linux-voice-assistant-cpp
     PRIVATE
         nlohmann_json::nlohmann_json
+        PkgConfig::PULSE
         PkgConfig::PULSE_SIMPLE
-        PkgConfig::ALSA
         PkgConfig::WEBRTC_APM
         PkgConfig::LIBCURL
         Threads::Threads

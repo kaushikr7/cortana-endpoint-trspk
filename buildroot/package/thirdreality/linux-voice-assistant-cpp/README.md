@@ -39,7 +39,8 @@ Supported options:
 --status                   Print redacted Cortana config status as JSON
 --config-file <path>       Override /data/cortana/config.json
 --credential-file <path>   Override /data/cortana/credential
---capture-alsa-device <d>  Override capture device (default: cortana_capture)
+--capture-source <name>     Override PulseAudio capture source
+                            (default: alsa_input.hw_0_2)
 --capture-mic-channel <n>  Select the interleaved microphone channel
 --capture-gain-db <n>      Override AGC2 fixed gain from 0 to 49 dB
 --debug                    Enable debug logging

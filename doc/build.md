@@ -857,14 +857,13 @@ Implementation paths are `src/audio/CapturePipeline.{h,cpp}`,
 `CaptureFrame.{h,cpp}`, `AudioCapture.{h,cpp}`, and `PcmRingBuffer.{h,cpp}`.
 The original four-channel production path was superseded after device soaks
 proved the Amlogic loopback DAI intermittently stalls. Production now opens the
-explicit ALSA `cortana_capture` PCM at 16 kHz stereo, which maps through
-PulseAudio to the stable direct PDM source `hw:0,2`, selects microphone channel
-0, and applies WebRTC high-pass filtering, AGC2, and noise suppression before
-writing to the bounded SPSC queue. The four-channel loopback path remains only
-in `aec_loopback_test` as a
-development diagnostic. The image explicitly builds the ALSA PulseAudio PCM
-plugin after PulseAudio; its previous misspelled configure flag could otherwise
-omit the `pulse` device silently.
+stable direct PDM source `alsa_input.hw_0_2` through PulseAudio's native API at
+16 kHz stereo, selects microphone channel 0, and applies WebRTC high-pass
+filtering, AGC2, and noise suppression before writing to the bounded SPSC
+queue. An intermediate implementation used the ALSA PulseAudio compatibility
+plugin, but live diagnostics showed its blocking read could repeatedly freeze
+while the native PulseAudio source remained healthy. The four-channel loopback
+path remains only in `aec_loopback_test` as a development diagnostic.
 
 #### T3.2 Real-time PCM transport — High
 
@@ -1089,7 +1088,10 @@ stalls while that stream remained healthy with zero errors or restarts. The
 keepalive hypothesis is therefore rejected. A foreground PulseAudio capture
 from `alsa_input.hw_0_2` completed 90,000 10 ms blocks (approximately 15
 minutes) without a stall. Production now uses that direct PDM source through
-the explicit ALSA `cortana_capture` PCM and removes the keepalive. AGC2, noise
+PulseAudio's native capture API and removes the keepalive. The ALSA PulseAudio
+compatibility bridge was removed from the runtime after live diagnostics
+showed repeated blocking reads despite the underlying source remaining
+healthy. AGC2, noise
 suppression, and the high-pass filter remain enabled; only software AEC is
 removed. Because the endpoint advertises `bargeInMode=none`, microphone
 transmission is discarded

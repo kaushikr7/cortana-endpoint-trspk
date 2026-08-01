@@ -5,11 +5,11 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <mutex>
 #include <string>
 #include <thread>
 
 #include "audio/PcmRingBuffer.h"
+#include "audio/PulseAudioSource.h"
 
 namespace lva::audio {
 
@@ -33,11 +33,11 @@ struct AudioCaptureMetrics {
 class AudioCapture {
 public:
     struct Options {
-        // Capture through PulseAudio's stable default source, which is backed
-        // by the board's direct PDM device hw:0,2. The hw:0,4 loopback DAI
-        // intermittently stops delivering periods on this hardware.
-        std::string alsa_device = "cortana_capture";
-        unsigned alsa_channels = 2;
+        // Capture through PulseAudio's native API from the direct PDM source.
+        // The ALSA PulseAudio compatibility plugin intermittently blocks in
+        // snd_pcm_readi even while this source remains healthy.
+        std::string pulse_source = "alsa_input.hw_0_2";
+        unsigned channels = 2;
         unsigned mic_channel = 0;
         std::array<int, 2> ref_channels = {-1, -1};
         std::size_t frames_per_read = 160;  // exactly 10 ms at 16 kHz
@@ -65,9 +65,8 @@ private:
 
     Options options_;
     PcmRingBuffer& queue_;
+    PulseAudioSource source_;
     WebRtcProcessor* processor_ = nullptr;
-    mutable std::mutex alsa_mutex_;
-    void* alsa_handle_ = nullptr;
     std::thread thread_;
     std::atomic<bool> running_{false};
     std::atomic<bool> stop_requested_{false};

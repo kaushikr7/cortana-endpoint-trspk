@@ -18,8 +18,9 @@ The retained `linux-voice-assistant-cpp` binary name now hosts:
 - centralized ring LED state, home-button input, and mute GPIO handling.
 
 There is no ESPHome listener, Home Assistant discovery, protobuf control
-plane, Sendspin client, or supervisor HTTP API. Continuous capture uses the
-stable PulseAudio source backed by the direct `hw:0,2` PDM microphones, then
+plane, Sendspin client, or supervisor HTTP API. Continuous capture uses
+PulseAudio's native API with the source backed by the direct `hw:0,2` PDM
+microphones, then
 WebRTC high-pass filtering, AGC2, and noise suppression feed generation-tagged
 20 ms PCM frames over the bounded WSS session transport. Response playback is
 locally isolated from microphone transmission because this endpoint does not

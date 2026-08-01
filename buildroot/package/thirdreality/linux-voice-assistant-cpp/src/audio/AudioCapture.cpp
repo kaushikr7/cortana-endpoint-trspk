@@ -1,11 +1,9 @@
 #include "audio/AudioCapture.h"
 
-#include <alsa/asoundlib.h>
-
 #include <algorithm>
-#include <cerrno>
 #include <chrono>
 #include <cstdint>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -30,7 +28,14 @@ std::uint64_t MonotonicNanoseconds() noexcept {
 }  // namespace
 
 AudioCapture::AudioCapture(Options options, PcmRingBuffer& queue)
-    : options_(std::move(options)), queue_(queue) {}
+    : options_(std::move(options)),
+      queue_(queue),
+      source_({
+          .source_name = options_.pulse_source,
+          .sample_rate = kSampleRate,
+          .channels = options_.channels,
+          .frames_per_fragment = options_.frames_per_read,
+      }) {}
 
 AudioCapture::~AudioCapture() {
     Stop();
@@ -49,83 +54,26 @@ bool AudioCapture::Start() {
     if (thread_.joinable()) thread_.join();
 
     const CaptureChannelLayout layout{
-        .channels = options_.alsa_channels,
+        .channels = options_.channels,
         .microphone = options_.mic_channel,
         .reference = options_.ref_channels,
     };
     if (!ValidateCaptureLayout(layout) ||
         options_.frames_per_read != kWebRtcPeriodSamples) {
         LVA_LOGE(kTag,
-                 "invalid ALSA capture layout or period "
+                 "invalid capture layout or period "
                  "(channels=%u mic=%u ref=%d,%d period=%zu)",
-                 options_.alsa_channels, options_.mic_channel,
+                 options_.channels, options_.mic_channel,
                  options_.ref_channels[0], options_.ref_channels[1],
                  options_.frames_per_read);
         return false;
     }
 
-    snd_pcm_t* pcm = nullptr;
-    int result = ::snd_pcm_open(&pcm, options_.alsa_device.c_str(),
-                                SND_PCM_STREAM_CAPTURE, 0);
-    if (result < 0) {
-        LVA_LOGE(kTag, "snd_pcm_open(%s) failed: %s",
-                 options_.alsa_device.c_str(), ::snd_strerror(result));
+    std::string error;
+    if (!source_.Open(error)) {
+        LVA_LOGE(kTag, "PulseAudio source %s failed: %s",
+                 options_.pulse_source.c_str(), error.c_str());
         return false;
-    }
-
-    snd_pcm_hw_params_t* hardware = nullptr;
-    snd_pcm_hw_params_alloca(&hardware);
-    auto fail = [&](const char* operation, int error) {
-        LVA_LOGE(kTag, "%s failed: %s", operation, ::snd_strerror(error));
-        ::snd_pcm_close(pcm);
-        return false;
-    };
-
-    if ((result = ::snd_pcm_hw_params_any(pcm, hardware)) < 0) {
-        return fail("snd_pcm_hw_params_any", result);
-    }
-    if ((result = ::snd_pcm_hw_params_set_access(
-             pcm, hardware, SND_PCM_ACCESS_RW_INTERLEAVED)) < 0) {
-        return fail("snd_pcm_hw_params_set_access", result);
-    }
-    if ((result = ::snd_pcm_hw_params_set_format(
-             pcm, hardware, SND_PCM_FORMAT_S16_LE)) < 0) {
-        return fail("snd_pcm_hw_params_set_format", result);
-    }
-    if ((result = ::snd_pcm_hw_params_set_channels(
-             pcm, hardware, options_.alsa_channels)) < 0) {
-        return fail("snd_pcm_hw_params_set_channels", result);
-    }
-    unsigned rate = kSampleRate;
-    if ((result = ::snd_pcm_hw_params_set_rate_near(
-             pcm, hardware, &rate, nullptr)) < 0) {
-        return fail("snd_pcm_hw_params_set_rate_near", result);
-    }
-    if (rate != kSampleRate) {
-        LVA_LOGE(kTag, "ALSA selected rate %u instead of %u", rate,
-                 kSampleRate);
-        ::snd_pcm_close(pcm);
-        return false;
-    }
-
-    snd_pcm_uframes_t period = options_.frames_per_read;
-    if ((result = ::snd_pcm_hw_params_set_period_size_near(
-             pcm, hardware, &period, nullptr)) < 0) {
-        return fail("snd_pcm_hw_params_set_period_size_near", result);
-    }
-    snd_pcm_uframes_t buffer_frames = kSampleRate / 2;
-    if ((result = ::snd_pcm_hw_params_set_buffer_size_near(
-             pcm, hardware, &buffer_frames)) < 0) {
-        return fail("snd_pcm_hw_params_set_buffer_size_near", result);
-    }
-    if ((result = ::snd_pcm_hw_params(pcm, hardware)) < 0) {
-        return fail("snd_pcm_hw_params", result);
-    }
-    snd_pcm_uframes_t actual_buffer = 0;
-    snd_pcm_uframes_t actual_period = 0;
-    if ((result = ::snd_pcm_get_params(
-             pcm, &actual_buffer, &actual_period)) < 0) {
-        return fail("snd_pcm_get_params", result);
     }
     queue_.Reset();
     periods_captured_.store(0, std::memory_order_relaxed);
@@ -137,20 +85,14 @@ bool AudioCapture::Start() {
     last_period_monotonic_ns_.store(0, std::memory_order_relaxed);
     maximum_processing_us_.store(0, std::memory_order_relaxed);
     stop_requested_.store(false, std::memory_order_relaxed);
-    {
-        std::lock_guard lock(alsa_mutex_);
-        alsa_handle_ = pcm;
-    }
     running_.store(true, std::memory_order_release);
     thread_ = std::thread([this] { ThreadLoop(); });
 
     LVA_LOGI(kTag,
-             "started ALSA device=%s rate=%u channels=%u read=%zu "
-             "period=%lu buffer=%lu mic=%u reference=%d,%d queue=%zu",
-             options_.alsa_device.c_str(), kSampleRate,
-             options_.alsa_channels, options_.frames_per_read,
-             static_cast<unsigned long>(actual_period),
-             static_cast<unsigned long>(actual_buffer),
+             "started PulseAudio source=%s rate=%u channels=%u "
+             "fragment=%zu mic=%u reference=%d,%d queue=%zu",
+             options_.pulse_source.c_str(), kSampleRate,
+             options_.channels, options_.frames_per_read,
              options_.mic_channel, options_.ref_channels[0],
              options_.ref_channels[1], queue_.Capacity());
     return true;
@@ -158,13 +100,9 @@ bool AudioCapture::Start() {
 
 void AudioCapture::Stop() {
     stop_requested_.store(true, std::memory_order_release);
-    {
-        std::lock_guard lock(alsa_mutex_);
-        if (alsa_handle_ != nullptr) {
-            (void)::snd_pcm_abort(static_cast<snd_pcm_t*>(alsa_handle_));
-        }
-    }
+    source_.Wake();
     if (thread_.joinable()) thread_.join();
+    source_.Close();
     running_.store(false, std::memory_order_release);
 }
 
@@ -204,39 +142,25 @@ void AudioCapture::RecordMaximumProcessing(
 void AudioCapture::ThreadLoop() {
     const std::size_t period = options_.frames_per_read;
     const CaptureChannelLayout layout{
-        .channels = options_.alsa_channels,
+        .channels = options_.channels,
         .microphone = options_.mic_channel,
         .reference = options_.ref_channels,
     };
     const bool has_reference = options_.ref_channels[0] >= 0;
-    std::vector<std::int16_t> interleaved(period * options_.alsa_channels);
+    std::vector<std::int16_t> interleaved(period * options_.channels);
     std::vector<std::int16_t> microphone(period);
     std::vector<std::int16_t> reference(period);
-    snd_pcm_t* pcm = static_cast<snd_pcm_t*>(alsa_handle_);
     std::uint64_t last_logged_drops = 0;
 
     while (!stop_requested_.load(std::memory_order_acquire)) {
-        const snd_pcm_sframes_t read =
-            ::snd_pcm_readi(pcm, interleaved.data(), period);
-        if (read < 0) {
-            const int error = static_cast<int>(read);
-            if (error == -EPIPE || error == -ESTRPIPE || error == -EINTR ||
-                error == -EIO) {
-                if (::snd_pcm_recover(pcm, error, 1) < 0) break;
-                recoveries_.fetch_add(1, std::memory_order_relaxed);
-                if (processor_ != nullptr) processor_->Reset();
-                continue;
-            }
-            if (!stop_requested_.load(std::memory_order_relaxed)) {
-                LVA_LOGE(kTag, "snd_pcm_readi failed: %s",
-                         ::snd_strerror(error));
+        std::string error;
+        if (!source_.Read(interleaved, stop_requested_, error)) {
+            if (!stop_requested_.load(std::memory_order_relaxed) &&
+                !error.empty()) {
+                LVA_LOGE(kTag, "PulseAudio capture failed: %s",
+                         error.c_str());
             }
             break;
-        }
-        if (static_cast<std::size_t>(read) != period) {
-            short_reads_.fetch_add(1, std::memory_order_relaxed);
-            if (processor_ != nullptr) processor_->Reset();
-            continue;
         }
 
         const auto processing_started = std::chrono::steady_clock::now();
@@ -280,11 +204,6 @@ void AudioCapture::ThreadLoop() {
         }
     }
 
-    {
-        std::lock_guard lock(alsa_mutex_);
-        alsa_handle_ = nullptr;
-        ::snd_pcm_close(pcm);
-    }
     running_.store(false, std::memory_order_release);
     LVA_LOGI(kTag, "capture stopped periods=%llu samples=%llu",
              static_cast<unsigned long long>(
