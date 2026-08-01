@@ -160,4 +160,53 @@ adb -s $SERIAL shell "/etc/init.d/S99ha-speaker voice-assistant stop"
 adb -s $SERIAL shell "/usr/bin/linux-voice-assistant-cpp"
 
 adb -s $SERIAL shell "/etc/init.d/S99ha-speaker voice-assistant restart"
+
+
+#################################
+TOKEN="$(kubectl -n cortana get secret cortana-diagnostics \
+  -o jsonpath='{.data.diagnostics-token}' | base64 -d)"
+
+curl -fsS \
+  -H "Authorization: Bearer $TOKEN" \
+  'https://cortana.raintreeresearch.com/api/v1/voice/diagnostics/turns?satellite_id=study-cortana-trspk&limit=5' \
+  | python3 -m json.tool
+
+
+################################
+export TOKEN
+
+python3 - <<'PY'
+import json
+import os
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+base = "https://cortana.raintreeresearch.com/api/v1/voice/diagnostics"
+headers = {"Authorization": f"Bearer {os.environ['TOKEN']}"}
+
+def get(url):
+    request = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(request) as response:
+        return json.load(response)
+
+query = urllib.parse.urlencode({
+    "satellite_id": "study-cortana-trspk",
+    "limit": 10,
+})
+summary = get(f"{base}/turns?{query}")
+details = [
+    get(f"{base}/turns/{urllib.parse.quote(turn['turnId'])}")
+    for turn in summary["turns"]
+]
+
+output = Path("/mnt/glados/src/cortana-endpoint-trspk/trspk-backend-diagnostics.json")
+output.write_text(json.dumps({
+    "summary": summary,
+    "details": details,
+}, indent=2))
+print(output)
+PY
+
+
 ```
