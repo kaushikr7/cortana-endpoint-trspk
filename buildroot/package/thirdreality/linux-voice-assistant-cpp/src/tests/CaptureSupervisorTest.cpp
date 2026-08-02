@@ -170,6 +170,38 @@ void TestHardwareChangeRestartsWithFreshAudioImmediately() {
     assert(fixture.flushes == 2);
 }
 
+void TestConcurrentMetricNewerThanPollSnapshotIsFresh() {
+    Fixture fixture;
+    auto supervisor = fixture.MakeSupervisor();
+    const auto start = CaptureSupervisor::Clock::time_point{} + 5s;
+    supervisor.Start(start);
+
+    // Poll's caller samples the clock, then the capture thread publishes a
+    // period before metrics() runs. The newer metric must be treated as age
+    // zero rather than as a stalled worker.
+    MarkPeriod(fixture, start + 2ms);
+    supervisor.Poll(start + 1ms);
+    auto snapshot = supervisor.Snapshot(start + 1ms);
+    assert(snapshot.state == CaptureLifecycleState::Ready);
+    assert(snapshot.stalled_workers == 0);
+    assert(fixture.stops == 0);
+
+    MarkPeriod(fixture, start + 20ms);
+    supervisor.Poll(start + 19ms);
+    snapshot = supervisor.Snapshot(start + 19ms);
+    assert(snapshot.state == CaptureLifecycleState::Ready);
+    assert(snapshot.stalled_workers == 0);
+    assert(fixture.stops == 0);
+
+    // The same metric still trips the real watchdog once it is genuinely
+    // older than the configured timeout.
+    supervisor.Poll(start + 121ms);
+    snapshot = supervisor.Snapshot(start + 121ms);
+    assert(snapshot.state == CaptureLifecycleState::Degraded);
+    assert(snapshot.stalled_workers == 1);
+    assert(fixture.stops == 1);
+}
+
 }  // namespace
 
 int main() {
@@ -177,4 +209,5 @@ int main() {
     TestStallsBackOffAndEventuallyBlock();
     TestFailedStartIsRetriedWithoutTightLoop();
     TestHardwareChangeRestartsWithFreshAudioImmediately();
+    TestConcurrentMetricNewerThanPollSnapshotIsFresh();
 }

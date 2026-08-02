@@ -12,6 +12,18 @@ namespace {
 
 constexpr const char* kTag = "capture_supervisor";
 
+std::uint64_t SampleAgeNanoseconds(std::uint64_t now_ns,
+                                   std::uint64_t sample_ns) noexcept {
+    // The capture thread can publish a period after the caller sampled
+    // `now` but before Poll() snapshots the metrics. That is a fresh sample,
+    // not a monotonic-clock failure or a stalled worker.
+    return sample_ns >= now_ns ? 0 : now_ns - sample_ns;
+}
+
+std::uint64_t Milliseconds(std::uint64_t nanoseconds) noexcept {
+    return nanoseconds / 1'000'000;
+}
+
 }  // namespace
 
 CaptureSupervisor::CaptureSupervisor(Dependencies dependencies)
@@ -104,24 +116,37 @@ void CaptureSupervisor::Poll(Clock::time_point now) {
     }
 
     const AudioCaptureMetrics metrics = dependencies_.metrics();
+    const std::uint64_t now_ns = MonotonicNanoseconds(now);
+    const auto stall_ns = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            options_.stall_timeout).count());
     if (snapshot_.state == CaptureLifecycleState::Starting) {
         if (!metrics.running) {
             RegisterFailure(CaptureFailure::Exited, now);
             return;
         }
-        if (metrics.last_period_monotonic_ns != 0) {
-            const std::uint64_t now_ns = MonotonicNanoseconds(now);
-            if (now_ns >= metrics.last_period_monotonic_ns &&
-                now_ns - metrics.last_period_monotonic_ns <=
-                    static_cast<std::uint64_t>(
-                        std::chrono::duration_cast<std::chrono::nanoseconds>(
-                            options_.stall_timeout).count())) {
-                ready_since_ = now;
-                SetState(CaptureLifecycleState::Ready);
-                return;
-            }
+        if (metrics.last_period_monotonic_ns != 0 &&
+            SampleAgeNanoseconds(now_ns,
+                                 metrics.last_period_monotonic_ns) <=
+                stall_ns) {
+            ready_since_ = now;
+            SetState(CaptureLifecycleState::Ready);
+            return;
         }
         if (now - attempt_started_ >= options_.startup_timeout) {
+            const std::uint64_t age_ns = metrics.last_period_monotonic_ns == 0
+                ? 0
+                : SampleAgeNanoseconds(
+                      now_ns, metrics.last_period_monotonic_ns);
+            LVA_LOGW(kTag,
+                     "capture startup timed out periods=%llu "
+                     "last_period_ns=%llu age_ms=%llu timeout_ms=%lld",
+                     static_cast<unsigned long long>(
+                         metrics.periods_captured),
+                     static_cast<unsigned long long>(
+                         metrics.last_period_monotonic_ns),
+                     static_cast<unsigned long long>(Milliseconds(age_ns)),
+                     static_cast<long long>(options_.startup_timeout.count()));
             RegisterFailure(CaptureFailure::Stalled, now);
         }
         return;
@@ -132,13 +157,21 @@ void CaptureSupervisor::Poll(Clock::time_point now) {
         RegisterFailure(CaptureFailure::Exited, now);
         return;
     }
-    const std::uint64_t now_ns = MonotonicNanoseconds(now);
-    const auto stall_ns = static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            options_.stall_timeout).count());
     if (metrics.last_period_monotonic_ns == 0 ||
-        now_ns < metrics.last_period_monotonic_ns ||
-        now_ns - metrics.last_period_monotonic_ns > stall_ns) {
+        SampleAgeNanoseconds(now_ns, metrics.last_period_monotonic_ns) >
+            stall_ns) {
+        const std::uint64_t age_ns = metrics.last_period_monotonic_ns == 0
+            ? 0
+            : SampleAgeNanoseconds(now_ns,
+                                   metrics.last_period_monotonic_ns);
+        LVA_LOGW(kTag,
+                 "capture worker stale periods=%llu last_period_ns=%llu "
+                 "age_ms=%llu timeout_ms=%lld",
+                 static_cast<unsigned long long>(metrics.periods_captured),
+                 static_cast<unsigned long long>(
+                     metrics.last_period_monotonic_ns),
+                 static_cast<unsigned long long>(Milliseconds(age_ns)),
+                 static_cast<long long>(options_.stall_timeout.count()));
         RegisterFailure(CaptureFailure::Stalled, now);
         return;
     }
