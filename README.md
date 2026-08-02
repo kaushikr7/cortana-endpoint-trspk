@@ -211,5 +211,5 @@ PY
 
 
 adb -s $SERIAL shell "/usr/bin/linux-voice-assistant-cpp --debug 2>&1" | Tee-Object -FilePath .\trspk-runtime.log
-adb -s $SERIAL shell "dmesg | tail -n 400" | Out-File .\trspk-gate-b-kernel.log
+adb -s $SERIAL shell "dmesg | tail -n 400" | Out-File .\trspk-kernel.log
 ```

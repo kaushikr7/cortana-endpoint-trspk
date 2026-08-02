@@ -8549,10 +8549,6 @@ static s32 wl_cfg80211_update_pmksa(struct wiphy *wiphy, struct net_device *dev,
 		wl_cfg80211_spmk_pmkdb_change_pmk_type(cfg, pmk_list);
 	}
 
-	if (wl_dbg_level & WL_DBG_DBG) {
-		prhex("pmklist_data", (char *)pmk_list, alloc_len);
-	}
-
 	err = wldev_iovar_setbuf(dev, "pmkdb", (char *)pmk_list,
 		alloc_len, cfg->ioctl_buf,
 		WLC_IOCTL_MAXLEN, &cfg->ioctl_buf_sync);
@@ -19113,7 +19109,6 @@ wl_cfg80211_get_fbt_key(struct net_device *dev, uint8 *key, int total_len)
 		bzero(key, FBT_KEYLEN);
 		WL_ERR(("wl_cfg80211_get_fbt_key: Failed to copy KCK and KEK \n"));
 	}
-	prhex("KCK, KEK", (uchar *)key, FBT_KEYLEN);
 end:
 	return bytes_written;
 }
@@ -19850,9 +19845,7 @@ wl_cfg80211_set_rekey_data(struct wiphy *wiphy, struct net_device *dev,
 	}
 
 exit:
-	prhex("kck", (const u8 *) (data->kck), RSN_KCK_LENGTH);
-	prhex("kek", (const u8 *) (data->kek), RSN_KEK_LENGTH);
-	prhex("replay_ctr", (const u8 *) (data->replay_ctr), RSN_REPLAY_LEN);
+	/* Negotiated WPA key material must never be written to kernel logs. */
 	WL_DBG(("Exit\n"));
 	return err;
 }

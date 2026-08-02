@@ -211,10 +211,14 @@ void SessionClient::DiscardAudioFrames() {
 }
 
 std::optional<SessionEvent> SessionClient::TryPopEvent() {
-    std::lock_guard lock(mutex_);
-    if (events_.empty()) return std::nullopt;
-    SessionEvent result = std::move(events_.front());
-    events_.pop_front();
+    std::optional<SessionEvent> result;
+    {
+        std::lock_guard lock(mutex_);
+        if (events_.empty()) return std::nullopt;
+        result = std::move(events_.front());
+        events_.pop_front();
+    }
+    condition_.notify_all();
     return result;
 }
 
@@ -422,10 +426,12 @@ void SessionClient::RunConnection(const DeviceTicket& ticket,
                     throw SessionTransportError(
                         "Cortana sent invalid or out-of-sequence output audio");
                 }
-                PushEvent(OutputAudioChunk{
-                    .turn_id = *output_audio_turn,
-                    .payload = std::move(message->payload),
-                });
+                if (!PushEvent(OutputAudioChunk{
+                        .turn_id = *output_audio_turn,
+                        .payload = std::move(message->payload),
+                    })) {
+                    return;
+                }
             } else {
                 ServerEvent event;
                 try {
@@ -447,7 +453,7 @@ void SessionClient::RunConnection(const DeviceTicket& ticket,
                         condition_.notify_all();
                         ready = true;
                         next_ping = clock_() + options_.ping_interval;
-                        PushEvent(std::move(event));
+                        if (!PushEvent(std::move(event))) return;
                     } else if (const auto* rejected =
                                    std::get_if<ErrorEvent>(&event)) {
                         throw TerminalSessionError(
@@ -500,7 +506,9 @@ void SessionClient::RunConnection(const DeviceTicket& ticket,
                     const bool terminal_error =
                         std::holds_alternative<ErrorEvent>(event) &&
                         !std::get<ErrorEvent>(event).recoverable;
-                    if (!keepalive_reply) PushEvent(std::move(event));
+                    if (!keepalive_reply && !PushEvent(std::move(event))) {
+                        return;
+                    }
                     if (terminal_error) {
                         throw TerminalSessionError(
                             "Cortana reported a non-recoverable session error");
@@ -578,17 +586,20 @@ void SessionClient::SetReady(const SessionReady& ready,
     condition_.notify_all();
 }
 
-void SessionClient::PushEvent(ServerEvent event) {
-    std::lock_guard lock(mutex_);
-    if (events_.size() >= options_.maximum_queued_events) {
-        throw SessionTransportError(
-            "bounded Cortana event queue is full");
-    }
+bool SessionClient::PushEvent(ServerEvent event) {
+    std::unique_lock lock(mutex_);
+    condition_.wait(lock, [this] {
+        return stop_requested_ ||
+            events_.size() < options_.maximum_queued_events;
+    });
+    if (stop_requested_) return false;
     events_.push_back(SessionEvent{
         .generation = snapshot_.generation,
         .event = std::move(event),
     });
+    lock.unlock();
     condition_.notify_all();
+    return true;
 }
 
 void SessionClient::DropQueuedCommands() {

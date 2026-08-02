@@ -115,7 +115,7 @@ private:
     void SetPhase(SessionPhase phase, std::string detail = {});
     void SetReady(const SessionReady& ready,
                   const DeviceTicket& ticket);
-    void PushEvent(ServerEvent event);
+    bool PushEvent(ServerEvent event);
     void DropQueuedCommands();
     void DropQueuedAudioLocked();
     bool WaitForStop(std::chrono::milliseconds duration);

@@ -2183,11 +2183,7 @@ wl_ext_gtk_key_info(struct net_device *dev, char *data, char *command, int total
 	}
 
 exit:
-	if (android_msg_level & ANDROID_INFO_LEVEL) {
-		prhex("kck", (uchar *)keyinfo.KCK, RSN_KCK_LENGTH);
-		prhex("kek", (uchar *)keyinfo.KEK, RSN_KEK_LENGTH);
-		prhex("replay_ctr", (uchar *)keyinfo.ReplayCounter, RSN_REPLAY_LEN);
-	}
+	/* Negotiated WPA key material must never be written to kernel logs. */
     return err;
 }
 #endif /* USE_IW */

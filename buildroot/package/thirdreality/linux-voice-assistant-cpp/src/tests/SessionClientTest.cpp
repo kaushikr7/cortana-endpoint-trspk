@@ -400,6 +400,85 @@ void TestBoundedOutputAudioEvents() {
     client->Stop();
 }
 
+void TestOutputAudioBurstAppliesBackpressure() {
+    constexpr std::size_t kChunkCount = 64;
+    constexpr std::size_t kResponseEventCount = kChunkCount + 2;
+    auto options = FastOptions();
+    options.maximum_queued_events = 32;
+    auto dependencies =
+        std::make_shared<FakeDependencies>(std::vector<ConnectionPlan>{{}});
+    auto client = MakeClient(dependencies, options);
+    client->Start();
+    assert(client->WaitForPhase(SessionPhase::Ready, 1s));
+    assert(WaitUntil([&] { return client->TryPopEvent().has_value(); }));
+    const auto generation = client->Snapshot().generation;
+    const auto state = dependencies->State(0);
+    assert(state);
+
+    {
+        std::lock_guard lock(state->mutex);
+        state->inbound.push_back({
+            .kind = WebSocketMessageKind::Text,
+            .payload = R"({"type":"audio.start","turnId":"turn-burst","encoding":"pcm_s16le","sampleRate":24000,"sampleWidth":2,"channels":1})",
+            .close_code = 0,
+            .close_reason = {},
+        });
+        for (std::size_t index = 0; index < kChunkCount; ++index) {
+            state->inbound.push_back({
+                .kind = WebSocketMessageKind::Binary,
+                .payload = std::string(4, static_cast<char>(index)),
+                .close_code = 0,
+                .close_reason = {},
+            });
+        }
+        state->inbound.push_back({
+            .kind = WebSocketMessageKind::Text,
+            .payload =
+                R"({"type":"audio.end","turnId":"turn-burst"})",
+            .close_code = 0,
+            .close_reason = {},
+        });
+        state->condition.notify_all();
+    }
+
+    // Let the producer reach the full 32-event queue before the consumer
+    // starts draining. The next event must wait instead of reconnecting.
+    assert(WaitUntil([&] {
+        std::lock_guard lock(state->mutex);
+        return state->inbound.size() <=
+            kResponseEventCount - options.maximum_queued_events - 1;
+    }));
+    assert(client->Snapshot().generation == generation);
+    assert(client->Snapshot().phase == SessionPhase::Ready);
+
+    std::vector<lva::cortana::SessionEvent> events;
+    assert(WaitUntil([&] {
+        while (auto event = client->TryPopEvent()) {
+            events.push_back(std::move(*event));
+        }
+        return events.size() == kResponseEventCount;
+    }, 2s));
+    assert(std::holds_alternative<lva::cortana::OutputAudioStart>(
+        events.front().event));
+    for (std::size_t index = 0; index < kChunkCount; ++index) {
+        const auto& chunk =
+            std::get<lva::cortana::OutputAudioChunk>(
+                events[index + 1].event);
+        assert(chunk.turn_id == "turn-burst");
+        assert(chunk.payload ==
+               std::string(4, static_cast<char>(index)));
+    }
+    assert(std::holds_alternative<lva::cortana::OutputAudioEnd>(
+        events.back().event));
+    {
+        std::lock_guard lock(state->mutex);
+        assert(!state->client_close.has_value());
+    }
+    assert(client->Snapshot().generation == generation);
+    assert(client->Snapshot().phase == SessionPhase::Ready);
+    client->Stop();
+}
+
 void TestOutOfSequenceOutputAudioReconnects() {
     auto dependencies = std::make_shared<FakeDependencies>(
         std::vector<ConnectionPlan>{{}, {}});
@@ -688,6 +767,7 @@ int main() {
     TestHandshakeAndEndpoint();
     TestAudioGenerationMuteAndBackpressure();
     TestBoundedOutputAudioEvents();
+    TestOutputAudioBurstAppliesBackpressure();
     TestOutOfSequenceOutputAudioReconnects();
     TestReconnectDropsOldAudioGeneration();
     TestPersistentAudioOverloadReconnects();
